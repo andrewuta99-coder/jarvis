@@ -1,0 +1,90 @@
+# AI SaaS Starter — CRA + FastAPI + DynamoDB + Bedrock + Stripe + SES
+#
+# The validated CloudMortgage stack, generalized. This is the default starter.
+# Demo target: blank account -> live URL in under 10 minutes.
+
+starter:
+  id: ai-saas-cra-fastapi
+  name: AI SaaS (React + FastAPI)
+  description: |
+    Full-stack AI SaaS with user accounts, AI chat, billing, and transactional
+    email. Frontend on Amplify Hosting, backend on ECS Fargate Spot, all
+    AWS-native. No PaaS lock-in.
+
+stack:
+  frontend: cra              # Create React App
+  backend: fastapi           # FastAPI on Python 3.11
+  database: dynamodb         # Pay-per-request DynamoDB
+  hosting:
+    frontend: amplify        # Amplify Hosting (CDN + S3 + CodeBuild)
+    backend: ecs_fargate_spot
+  region: us-east-1          # default; user can pick at init
+
+features:
+  # Phase 2 (services)
+  - auth                     # /jarvis-add-users
+  - ai                       # /jarvis-add-ai (Bedrock chat + KB)
+  # Phase 3 (integration)
+  - email                    # /jarvis-add-email (SES)
+  - payments                 # /jarvis-add-payments (Stripe)
+
+cost_projection:
+  idle: 14                   # USD / month with no users
+  at_1k_users: 47
+  at_10k_users: 280
+  breakdown_idle:
+    opensearch_serverless: 50  # KB minimum; if AI feature removed -> $0
+    vpc_endpoints: 7.30        # SES + Bedrock + AOSS interface endpoints
+    ecs_fargate_spot: 4.50     # 0.5 vCPU min idle
+    dynamodb: 0                # pay-per-request
+    s3: 0
+    ses: 0                     # 62k emails free
+    bedrock: 0                 # pay-per-invoke
+    cloudwatch: 1.20           # logs + metrics minimums
+    secrets_manager: 1.20      # 3 secrets
+
+constellation:
+  phases:
+    - id: foundation
+      parallel: true
+      agents: [networking, infra, data]
+    - id: services
+      parallel: true
+      agents: [auth, ai, backend, frontend]
+      depends_on: [foundation]
+    - id: integration
+      parallel: true
+      agents: [email, payments, deploy]
+      depends_on: [services]
+    - id: ship
+      parallel: false
+      agents: [convergence, ship]
+      depends_on: [integration]
+
+api_layer:
+  enabled: true
+  agent: api
+  runs_in: services           # bundled into Phase 2 alongside auth/ai/backend
+
+risk_callouts:
+  - id: bedrock_model_access
+    severity: low
+    message: |
+      Bedrock requires model access enabled in the AWS console (one-time, per
+      region). The /jarvis-add-ai skill checks for this and surfaces the link
+      to enable Nova + Claude models.
+  - id: ses_sandbox
+    severity: low
+    message: |
+      SES starts in sandbox mode — you can only email verified addresses until
+      AWS approves production access (~24-48hr). Email skill walks the user
+      through requesting access.
+  - id: opensearch_minimum
+    severity: medium
+    message: |
+      OpenSearch Serverless has a $50/mo minimum spend (2 OCU index + 2 OCU
+      search). If you don't need KB-backed chat, removing the AI feature drops
+      idle cost to $14/mo.
+
+# v0 status: scaffold only. Template directories under templates/features/<name>/
+# are the next milestone.
