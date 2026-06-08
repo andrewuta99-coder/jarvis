@@ -1,0 +1,80 @@
+# Marketplace Starter — Two-sided platform, Stripe Connect, AI matching
+#
+# Pick this when the app has TWO user types (buyers + sellers, clients +
+# providers, etc.) and money flows between them. Stripe Connect handles
+# the marketplace payment topology (platform takes %, rest goes to seller).
+
+starter:
+  id: marketplace
+  name: Marketplace (Stripe Connect)
+  description: |
+    Two-sided platform with separate signup/dashboard flows for each side.
+    Stripe Connect for split payments. AI feature optional for matching
+    (e.g., "find me a contractor who does X within Y miles").
+
+stack:
+  frontend: cra
+  backend: fastapi
+  database: dynamodb
+  hosting:
+    frontend: amplify
+    backend: ecs_fargate_spot
+
+features:
+  - auth                     # extended: each user has a "role" (buyer | seller | admin)
+  - files                    # for seller listings + buyer attachments
+  - email                    # transactional + notifications
+  - payments-connect         # Stripe Connect express accounts (new feature variant)
+  - ai                       # optional matching agent
+
+optional_features:
+  - realtime                 # for chat between buyers and sellers
+  - search                   # OpenSearch for listings beyond what DDB GSIs cover
+
+cost_projection:
+  idle: 215                  # +$15 vs AI SaaS for the second DDB tables
+  at_1k_users: 245
+  at_10k_users: 380
+
+constellation:
+  phases:
+    - id: foundation
+      parallel: true
+      agents: [networking, infra, data]
+    - id: services
+      parallel: true
+      agents: [auth, ai, backend, frontend]
+      depends_on: [foundation]
+    - id: integration
+      parallel: true
+      agents: [email, payments, deploy]
+      depends_on: [services]
+    - id: ship
+      parallel: false
+      agents: [convergence, ship]
+      depends_on: [integration]
+
+extra_tables:
+  - listings           # what sellers offer
+  - bookings           # buyer requests
+  - reviews            # bidirectional ratings
+  - payouts            # Stripe Connect payout ledger
+
+risk_callouts:
+  - id: stripe_connect_kyc
+    severity: high
+    message: |
+      Stripe Connect requires sellers to complete a KYC/identity flow before
+      they can receive payouts. The frontend pattern from CloudMortgage uses
+      Stripe's hosted Express onboarding link — keeps you out of KYC scope.
+  - id: tax_handling
+    severity: medium
+    message: |
+      Marketplaces have complex tax obligations (Marketplace Facilitator
+      laws in many US states). This starter does NOT handle tax reporting.
+      Consult a tax pro before going live with US sellers.
+  - id: dispute_workflow
+    severity: medium
+    message: |
+      Stripe chargebacks on marketplace transactions land on you (the platform),
+      not the seller. Build a dispute workflow + reserve hold policy.

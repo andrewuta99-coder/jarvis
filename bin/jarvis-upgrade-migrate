@@ -164,10 +164,62 @@ def main() -> int:
             print(f"  - {entry['file']} ({entry['feature']})")
 
     if args.apply and report["stale_unedited"]:
-        print("\nApplying patches not yet implemented in v1.0 — use the diff to apply manually.")
-        print("v1.1 will write patches via a renderer pass with the current context.")
-        return 1
+        return _apply_patches(report["stale_unedited"], args)
 
+    return 0
+
+
+def _apply_patches(stale: list[dict], args) -> int:
+    """v1.4: actually write the patches.
+
+    Re-renders the template against .jarvis/CONTEXT.json so the new file
+    matches what the user's stack already has (same APP_NAME, REGION, etc.).
+    Only writes files that hash-identical to the OLD template (proof user
+    didn't touch them since Jarvis generated them).
+    """
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+
+    render_bin = args.jarvis_dir / "bin" / "jarvis-render"
+    loader = SourceFileLoader("jarvis_render", str(render_bin))
+    spec = importlib.util.spec_from_loader("jarvis_render", loader)
+    render_mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(render_mod)
+
+    ctx_path = args.target_dir / ".jarvis" / "CONTEXT.json"
+    if not ctx_path.exists():
+        print("ERROR: no .jarvis/CONTEXT.json — re-run /jarvis-init first.", file=sys.stderr)
+        return 1
+    context = json.loads(ctx_path.read_text())
+
+    backup_dir = args.target_dir / ".jarvis" / "upgrade-backups" / f"backup-{int(__import__('time').time())}"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    patched: list[str] = []
+
+    for entry in stale:
+        file_path = Path(entry["file"])
+        template_path = Path(entry["template"])
+        try:
+            # Backup the current file before patching — user can always recover
+            relative = file_path.relative_to(args.target_dir)
+            backup_path = backup_dir / relative
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_path.write_text(file_path.read_text())
+
+            # Re-render with the new template + the existing context
+            new_content = render_mod.render(
+                template_path.read_text(),
+                {**context, "TEMPLATE_HASH": current_hash(template_path)},
+            )
+            file_path.write_text(new_content)
+            patched.append(str(file_path))
+            print(f"  patched: {relative}")
+        except Exception as exc:
+            print(f"  ERROR patching {file_path}: {exc}", file=sys.stderr)
+
+    print(f"\nPatched {len(patched)} file(s).")
+    print(f"Backups saved to {backup_dir.relative_to(args.target_dir)}/")
+    print("Review with `git diff`. Restore any patch with `cp .jarvis/upgrade-backups/.../<file>`.")
     return 0
 
 

@@ -157,4 +157,4 @@ If the user has set `jarvis-config set auto_upgrade true`:
 
 Every skill's preamble runs `jarvis-update-check`. If a new version is available, the upgrade runs silently in the background before the skill executes. Throttled to once per hour. Template migrations are NEVER auto-applied — always require user confirmation.
 
-This matches gstack's pattern: silent CLI upgrade, explicit Terraform migration.
+The pattern: silent CLI upgrade, explicit Terraform migration.

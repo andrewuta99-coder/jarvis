@@ -1,0 +1,53 @@
+name: Propose an incident-derived default
+description: You hit a production AWS gotcha that Jarvis should prevent by default
+title: "[default] "
+labels: ["enhancement", "incident-default"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are the highest-leverage contributions to Jarvis. Every default
+        baked in saves someone else from learning it the hard way.
+
+  - type: textarea
+    id: incident
+    attributes:
+      label: The incident
+      description: What happened to you? Be specific. Dates if you have them.
+      placeholder: |
+        Example: "On 2026-03-12 my Bedrock agent stopped responding because
+        the IAM policy was scoped to anthropic.claude-3-haiku-20240307-v1:0
+        and AWS deprecated that exact model ID. Switching to a wildcard fixed it."
+    validations: { required: true }
+
+  - type: textarea
+    id: detection-cost
+    attributes:
+      label: How long did it take to diagnose
+      placeholder: "Half a day before realizing the IAM model ARN was the issue"
+    validations: { required: true }
+
+  - type: textarea
+    id: proposed-default
+    attributes:
+      label: Proposed default
+      description: What should Jarvis do automatically so this never bites again?
+      placeholder: |
+        Example: "Make the Bedrock agent IAM policy use a model-family wildcard
+        (anthropic.claude-*) so version bumps don't require IAM redeploys."
+    validations: { required: true }
+
+  - type: input
+    id: affected-feature
+    attributes:
+      label: Which feature should this land in
+      placeholder: "ai, networking, payments, ..."
+
+  - type: checkboxes
+    id: pr-intent
+    attributes:
+      label: Do you want to send the PR?
+      options:
+        - label: I'll send a PR
+        - label: I'll review someone else's PR
+        - label: Just reporting — please pick this up

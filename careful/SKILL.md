@@ -11,7 +11,7 @@ triggers: [jarvis careful, be careful, safety mode, careful mode]
 
 # /jarvis-careful — safety guardrails on
 
-Activate the destructive-command guard. Mirrors gstack's /careful pattern but with AWS-specific commands.
+Activate the destructive-command guard for AWS + Terraform.
 
 ## Activation
 

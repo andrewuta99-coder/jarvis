@@ -6,7 +6,7 @@ what we believe about building on AWS in 2026.
 
 ---
 
-## The Golden Age (borrowed from gstack)
+## The Golden Age
 
 A single person with AI can now build what used to take a team of twenty. The
 engineering barrier is gone. What remains is taste, judgment, and the willingness
@@ -90,7 +90,7 @@ in production — is what this principle prevents.
 
 ---
 
-## 6. User Sovereignty (borrowed from gstack)
+## 6. User Sovereignty
 
 The agent recommends. The user decides. Especially for anything that touches
 data, billing, or shared infra.

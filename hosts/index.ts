@@ -4,8 +4,6 @@
 //   1. Create hosts/<name>.ts with a HostConfig export
 //   2. Add the import + entry below
 //   3. Add a case in setup script's host switch (for skillsRoot)
-//
-// Mirror of gstack/hosts/index.ts.
 
 export interface HostConfig {
   /** Canonical name. Used as ./setup --host <name>. */

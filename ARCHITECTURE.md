@@ -230,7 +230,7 @@ hosts/
 
 ## Why Bun
 
-Same reasons as GStack chose Bun:
+Reasons we picked Bun over Node:
 
 1. **Compiled binaries** — `bun build --compile` produces a single ~60MB executable. No node_modules at runtime, no PATH games.
 2. **Native SQLite** — for the learnings cache. No `better-sqlite3` native addon compilation.

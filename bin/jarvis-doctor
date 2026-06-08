@@ -136,6 +136,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Live Jarvis stack health check")
     parser.add_argument("--target-dir", required=True, type=Path)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--fix", action="store_true",
+                        help="Interactively remediate warnings/failures (asks per item)")
     args = parser.parse_args()
 
     profile_path = args.target_dir / ".jarvis" / "profile.json"
@@ -172,10 +174,84 @@ def main() -> int:
     print(f"\nStack health: {len(all_results) - fails - warns}/{len(all_results)} OK")
     if fails:
         print(f"  {fails} failures — needs attention")
-        return 1
     if warns:
         print(f"  {warns} warnings — non-urgent")
+
+    if args.fix and (fails or warns):
+        return _interactive_fix(all_results, profile, app_name, region)
+
+    if fails:
+        return 1
     return 0
+
+
+def _interactive_fix(results: list[dict], profile: dict, app_name: str, region: str) -> int:
+    """v1.4: walk each warn/fail interactively. Never auto-fix.
+
+    For each issue we know how to remediate, prompt the user. AWS calls
+    are made directly via boto3 with the same session that doctor used.
+    """
+    fixable_warns = [r for r in results if r["status"] in (WARN, FAIL)]
+    if not fixable_warns:
+        return 0
+
+    print(f"\nInteractive fix: {len(fixable_warns)} item(s) to address.")
+    ddb = boto3.client("dynamodb", region_name=region)
+    fixed = 0
+
+    for r in fixable_warns:
+        msg = r["msg"]
+        print(f"\n  Issue: {msg}")
+        action = _propose_fix(msg, app_name, region)
+        if not action:
+            print("  No automated fix available. Skipping.")
+            continue
+        print(f"  Proposed: {action['description']}")
+        resp = input("  Apply? [y/N]: ").strip().lower()
+        if resp != "y":
+            print("  Skipped.")
+            continue
+        try:
+            action["fn"](ddb)
+            print(f"  ok: applied")
+            fixed += 1
+        except Exception as exc:
+            print(f"  ERROR: {exc}")
+
+    print(f"\nFixed {fixed}/{len(fixable_warns)} item(s).")
+    return 0 if fixed == len(fixable_warns) else 1
+
+
+def _propose_fix(msg: str, app_name: str, region: str) -> dict | None:
+    """Map known warning messages to a remediation action."""
+    if "PITR" in msg and ":" in msg:
+        table_name = msg.split(":")[0].strip()
+        return {
+            "description": f"Enable PITR on {table_name}",
+            "fn": lambda ddb: ddb.update_continuous_backups(
+                TableName=table_name,
+                PointInTimeRecoverySpecification={"PointInTimeRecoveryEnabled": True},
+            ),
+        }
+    if "deletion-protection" in msg and ":" in msg:
+        table_name = msg.split(":")[0].strip()
+        return {
+            "description": f"Enable deletion-protection on {table_name}",
+            "fn": lambda ddb: ddb.update_table(
+                TableName=table_name,
+                DeletionProtectionEnabled=True,
+            ),
+        }
+    if "versioning" in msg and ":" in msg:
+        bucket = msg.split(":")[0].strip()
+        s3 = boto3.client("s3")
+        return {
+            "description": f"Enable versioning on s3://{bucket}",
+            "fn": lambda _ddb: s3.put_bucket_versioning(
+                Bucket=bucket, VersioningConfiguration={"Status": "Enabled"},
+            ),
+        }
+    return None
 
 
 if __name__ == "__main__":

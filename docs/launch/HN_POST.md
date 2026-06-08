@@ -53,10 +53,6 @@ What it isn't:
 - It's not a SaaS. The CLI is free MIT forever. A hosted dashboard might
   exist later for teams; the CLI never moves behind a paywall.
 
-Inspired by Garry Tan's [gstack](https://github.com/garrytan/gstack) for
-the slash-command structure. Where gstack polishes the workflow, Jarvis
-scaffolds the cloud.
-
 Repo: https://github.com/andrewuta99-coder/jarvis
 Demo (10 min): [link]
 30-second sizzle: [link]
@@ -86,13 +82,6 @@ Three specialists working in parallel finish their phase in the time of
 the slowest one — typically 60-90 seconds. The whole build converges in
 under 10 minutes. Parallelism isn't a flex; it's the only way the
 magic-moment demo is physically possible.
-
-### "How does this compare to gstack?"
-
-GStack is the workflow layer — CEO review, design review, QA, ship. Jarvis
-is the scaffold layer — VPC, IAM, DynamoDB, Bedrock. They compose. Plan
-the app with gstack's `/office-hours`; scaffold + deploy it with
-`/jarvis-init`. Same MIT spirit, same install pattern.
 
 ### "What's the trademark situation with 'Jarvis'?"
 

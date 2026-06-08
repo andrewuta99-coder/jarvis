@@ -1,0 +1,77 @@
+# Internal Tool Starter — Employee dashboard, SSO-ready, no public auth
+#
+# For tools your team uses, not customers. Defaults to SSO (Google /
+# Okta / SAML) instead of email+password signup. No public signup route.
+# Tight CORS, no email feature by default (Slack notifications instead).
+
+starter:
+  id: internal-tool
+  name: Internal Tool (SSO-ready)
+  description: |
+    Dashboards and admin tools for employees. SSO via Google Workspace by
+    default (Okta/SAML available). Behind a VPN or zero-trust proxy if you
+    want. No public-internet signup route. Slack notifications instead of
+    email by default.
+
+stack:
+  frontend: cra
+  backend: fastapi
+  database: dynamodb
+  hosting:
+    frontend: amplify         # private branch — only accessible via SSO
+    backend: ecs_fargate_spot
+
+features:
+  - auth-sso                  # Google Workspace OAuth (new variant, replaces auth)
+  - ai                        # internal AI assistant
+  - backend
+  - frontend
+  - notifications-slack       # incoming-webhook helper, no SES setup needed
+  - deploy
+
+omitted_features:
+  - payments                  # internal tools don't take money
+  - email                     # Slack is the comm channel
+
+cost_projection:
+  idle: 165                   # cheaper — no SES + Bedrock-but-no-KB-by-default
+  at_50_users: 185            # internal tools rarely scale to 1k
+  at_500_users: 220
+
+constellation:
+  phases:
+    - id: foundation
+      parallel: true
+      agents: [networking, infra, data]
+    - id: services
+      parallel: true
+      agents: [auth-sso, ai, backend, frontend]
+      depends_on: [foundation]
+    - id: integration
+      parallel: true
+      agents: [notifications-slack, deploy]
+      depends_on: [services]
+    - id: ship
+      parallel: false
+      agents: [convergence, ship]
+      depends_on: [integration]
+
+# Tighter security defaults than public-facing starters
+security_overrides:
+  cors_origins: "https://internal.{{DOMAIN}}"   # no wildcard
+  cloudfront: false                              # behind VPN/SSO instead
+  waf: true                                      # AWS WAF on the ALB
+  enforce_mfa: true                              # SSO provider must enforce
+
+risk_callouts:
+  - id: sso_provider_choice
+    severity: low
+    message: |
+      Default is Google Workspace OAuth (cheap, easy). Okta/Microsoft Entra
+      require additional setup. Run /jarvis-add-auth-sso to change provider.
+  - id: vpn_or_zero_trust
+    severity: medium
+    message: |
+      This starter assumes the URL is public-internet reachable but SSO-gated.
+      For sensitive internal tools, put it behind Cloudflare Access, AWS
+      Verified Access, or a VPN. Jarvis doesn't provision those.

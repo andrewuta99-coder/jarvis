@@ -50,14 +50,10 @@ Architect interviews. Planner decomposes. Specialists build. Convergence verifie
 **Channels**:
 1. HN front page — "I open-sourced create-next-app for a full AWS stack"
 2. Twitter: Vercel vs Jarvis comparison
-3. Y Combinator distribution via GStack
+3. Y Combinator distribution
 4. Last Week in AWS / Corey Quinn pitch
 5. AI Twitter (Bedrock angle)
 6. AWS re:Invent submission
-
-## Sibling product
-
-GStack (github.com/garrytan/gstack) for sprint workflow (CEO/eng/QA/ship). Jarvis for AWS scaffold + deploy. They compose — use both.
 
 ## Roadmap
 

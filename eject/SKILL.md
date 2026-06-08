@@ -104,7 +104,7 @@ stack manually. The Terraform is standard.
 
 ```bash
 rm -rf .jarvis/
-# Remove the gstack-style section from CLAUDE.md if present
+# Remove the "## jarvis" section from CLAUDE.md if present
 if [ -f CLAUDE.md ]; then
   # Remove "## jarvis" section
   python3 -c "

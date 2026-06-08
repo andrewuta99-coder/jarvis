@@ -1,0 +1,84 @@
+# Mobile Backend Starter — Push notifications, biometric-ready auth, no web frontend
+#
+# Backend + push delivery + minimal admin dashboard. No customer web UI —
+# the mobile app is the customer surface. Defaults assume React Native / Expo
+# on the device side, with deep links for password reset etc.
+
+starter:
+  id: mobile-backend
+  name: Mobile Backend (Expo/iOS/Android)
+  description: |
+    REST + WebSocket backend for native mobile apps. Push notifications via
+    APNs + FCM. Biometric-ready auth (refresh tokens last 90 days vs 7).
+    Admin dashboard included; no consumer web UI (the app is the consumer
+    surface).
+
+stack:
+  frontend: cra              # admin only, not consumer-facing
+  backend: fastapi
+  database: dynamodb
+  hosting:
+    frontend: amplify        # admin dashboard
+    backend: ecs_fargate_spot
+  mobile: expo               # informational; Jarvis doesn't generate mobile code
+
+features:
+  - auth                     # extended: longer refresh TTL, device_id tracking
+  - files                    # uploads from mobile (photos, attachments)
+  - ai                       # optional in-app AI features
+  - realtime                 # WebSocket for live updates to the mobile app
+  - push                     # APNs + FCM via SNS Platform Endpoints (new feature)
+  - email                    # password reset + critical notifications
+  - payments                 # in-app purchases optional (StoreKit/Play Billing on device)
+  - backend
+  - frontend                 # admin only
+  - deploy
+
+cost_projection:
+  idle: 210
+  at_1k_dau: 245             # DAU not MAU — mobile is more active
+  at_10k_dau: 380
+
+constellation:
+  phases:
+    - id: foundation
+      parallel: true
+      agents: [networking, infra, data]
+    - id: services
+      parallel: true
+      agents: [auth, ai, backend, frontend]
+      depends_on: [foundation]
+    - id: integration
+      parallel: true
+      agents: [email, push, realtime, deploy]
+      depends_on: [services]
+    - id: ship
+      parallel: false
+      agents: [convergence, ship]
+      depends_on: [integration]
+
+mobile_overrides:
+  refresh_token_ttl_days: 90    # vs 7 — mobile users hate frequent re-login
+  device_id_required: true       # JWT includes device_id; revoke per-device
+  cors_origins: "*"              # mobile apps don't honor browser CORS
+  api_key_optional: true         # mobile gets a long-lived API key per install
+
+risk_callouts:
+  - id: apns_certificate
+    severity: high
+    message: |
+      Apple Push (APNs) requires a p8 token from your Apple Developer account.
+      Jarvis stores it in Secrets Manager; you must upload it after init.
+      /jarvis-add-push walks through the upload + tokenization.
+  - id: fcm_service_account
+    severity: medium
+    message: |
+      Firebase Cloud Messaging (Android) uses a service-account JSON. Same
+      Secrets Manager flow. Both must be set before push works.
+  - id: in_app_purchase_validation
+    severity: medium
+    message: |
+      If using Apple/Google in-app purchases, your backend must validate
+      receipts. This is NOT a Stripe replacement — different APIs. Jarvis
+      ships a stub validator; you wire the real one to your StoreKit /
+      Play Billing setup.

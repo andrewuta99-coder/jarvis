@@ -69,7 +69,7 @@ bun run gen:skill-docs   # regenerate SKILL.md from templates
 
 ## Skill template workflow (when we get there)
 
-Like gstack, SKILL.md files will be generated from `.tmpl` templates by `bun run gen:skill-docs`. This prevents docs from drifting from code. CI fails if `git diff` shows uncommitted regeneration.
+SKILL.md files will be generated from `.tmpl` templates by `bun run gen:skill-docs`. This prevents docs from drifting from code. CI fails if `git diff` shows uncommitted regeneration.
 
 At v0 we're hand-writing skills directly. The template system arrives in v0.2.
 
@@ -98,10 +98,6 @@ Each specialist's SKILL.md declares its `contract.inputs`, `contract.outputs`, a
 4. Demo recording at <10 minutes
 
 Track progress in `docs/MILESTONES.md`.
-
-## Sibling project: GStack
-
-Jarvis is a sibling product to [gstack](https://github.com/garrytan/gstack), not a competitor. GStack polishes the workflow for experienced builders (CEO review, design review, QA, ship). Jarvis onboards new builders to AWS (init, build, deploy). They compose naturally — use GStack to plan and review the app, use Jarvis to scaffold and deploy it. We borrow GStack's preamble pattern, host system, and update ceremony.
 
 ## Voice (for docs and skill prose)
 

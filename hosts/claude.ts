@@ -1,5 +1,4 @@
 // Host config for Claude Code.
-// Pattern mirrors gstack/hosts/claude.ts.
 
 import type { HostConfig } from "./index";
 

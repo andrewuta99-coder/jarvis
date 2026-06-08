@@ -1,0 +1,67 @@
+name: Bug report
+description: Something Jarvis did that it shouldn't, or didn't do that it should
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The more reproducible the better — include the
+        exact command, the unexpected output, and the expected behavior.
+
+  - type: input
+    id: jarvis-version
+    attributes:
+      label: Jarvis version
+      description: Output of `cat ~/.claude/skills/jarvis/VERSION`
+      placeholder: "1.6.0"
+    validations: { required: true }
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: AI agent host
+      options: [Claude Code, Codex CLI, Cursor, OpenClaw, Other]
+    validations: { required: true }
+
+  - type: input
+    id: aws-region
+    attributes:
+      label: AWS region
+      placeholder: "us-east-1"
+
+  - type: textarea
+    id: what-ran
+    attributes:
+      label: What command did you run
+      placeholder: "/jarvis-init my-saas"
+      render: bash
+    validations: { required: true }
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations: { required: true }
+
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What you expected
+    validations: { required: true }
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / error output
+      render: shell
+
+  - type: checkboxes
+    id: pre-check
+    attributes:
+      label: Before submitting
+      options:
+        - label: I ran `/jarvis-upgrade` and the bug still reproduces
+          required: false
+        - label: I ran `/jarvis-doctor` and pasted relevant warnings above
+          required: false
