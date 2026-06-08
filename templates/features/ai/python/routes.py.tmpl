@@ -1,0 +1,55 @@
+"""AI chat routes — wire under /api."""
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+
+from core.auth_middleware import AuthUser, require_user
+from . import service
+
+router = APIRouter()
+
+
+class ChatBody(BaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+    thread_id: str | None = None
+
+
+class ChatResponse(BaseModel):
+    response: str
+    thread_id: str
+    citations: list[dict] = []
+    model: str
+    tokens_used: int | None = None
+
+
+@router.post("/chat")
+async def chat(body: ChatBody, user: Annotated[AuthUser, Depends(require_user)]) -> ChatResponse:
+    return await service.chat(
+        tenant=user.tenant_id,
+        user_id=user.user_id,
+        message=body.message,
+        thread_id=body.thread_id,
+    )
+
+
+class KBQueryBody(BaseModel):
+    query: str
+    top_k: int = 5
+
+
+@router.post("/chat/kb-query")
+async def kb_query(body: KBQueryBody, user: Annotated[AuthUser, Depends(require_user)]):
+    return await service.kb_query(tenant=user.tenant_id, query=body.query, top_k=body.top_k)
+
+
+@router.get("/chat/threads")
+async def list_threads(user: Annotated[AuthUser, Depends(require_user)]):
+    return {"threads": await service.list_threads(user_id=user.user_id)}
+
+
+@router.get("/chat/threads/{thread_id}")
+async def get_thread(thread_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    return {"messages": await service.get_messages(user_id=user.user_id, thread_id=thread_id)}

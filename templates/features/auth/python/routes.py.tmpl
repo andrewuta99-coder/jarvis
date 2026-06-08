@@ -1,0 +1,118 @@
+"""Auth HTTP routes — wire under /api/auth."""
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, status
+from pydantic import BaseModel, EmailStr, Field
+
+from core.auth_middleware import AuthUser, require_user
+from core.errors import BadRequest, Conflict, Unauthorized
+
+from . import service
+from . import signup_verification
+
+router = APIRouter()
+
+
+# ─── Schemas ──────────────────────────────────────────────────────────────
+class SignupBody(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+    tenant_id: str | None = None
+
+
+class VerifyBody(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=6, max_length=8)
+    tenant_id: str | None = None
+
+
+class LoginBody(BaseModel):
+    email: EmailStr
+    password: str
+    tenant_id: str | None = None
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class RefreshBody(BaseModel):
+    refresh_token: str
+
+
+class ForgotBody(BaseModel):
+    email: EmailStr
+    tenant_id: str | None = None
+
+
+class ResetBody(BaseModel):
+    code: str
+    new_password: str = Field(..., min_length=8, max_length=128)
+    tenant_id: str | None = None
+
+
+# ─── Routes ───────────────────────────────────────────────────────────────
+@router.post("/signup", status_code=status.HTTP_202_ACCEPTED)
+async def signup(body: SignupBody):
+    tenant = body.tenant_id or "default"
+    try:
+        await service.create_pending_user(tenant=tenant, email=body.email, password=body.password)
+    except service.UserExistsError:
+        raise Conflict("Account already exists")
+    await signup_verification.issue_code(tenant=tenant, email=body.email)
+    return {"status": "verification_email_sent"}
+
+
+@router.post("/verify")
+async def verify(body: VerifyBody) -> TokenPair:
+    tenant = body.tenant_id or "default"
+    if not await signup_verification.verify_code(tenant=tenant, email=body.email, code=body.code):
+        raise Unauthorized("Invalid or expired code")
+    user = await service.activate_user(tenant=tenant, email=body.email)
+    return await service.issue_tokens(user)
+
+
+@router.post("/login")
+async def login(body: LoginBody) -> TokenPair:
+    tenant = body.tenant_id or "default"
+    user = await service.authenticate(tenant=tenant, email=body.email, password=body.password)
+    if user is None:
+        raise Unauthorized("Invalid email or password")
+    return await service.issue_tokens(user)
+
+
+@router.post("/refresh")
+async def refresh(body: RefreshBody) -> TokenPair:
+    return await service.refresh_tokens(body.refresh_token)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(body: RefreshBody):
+    await service.revoke_refresh(body.refresh_token)
+
+
+@router.post("/forgot-password", status_code=status.HTTP_202_ACCEPTED)
+async def forgot(body: ForgotBody):
+    # Same 202 response whether the email exists or not — prevents enumeration.
+    tenant = body.tenant_id or "default"
+    await signup_verification.issue_code(tenant=tenant, email=body.email, purpose="reset")
+    return {"status": "if_account_exists_email_sent"}
+
+
+@router.post("/reset-password")
+async def reset(body: ResetBody) -> TokenPair:
+    tenant = body.tenant_id or "default"
+    user = await service.reset_password(tenant=tenant, code=body.code, new_password=body.new_password)
+    if user is None:
+        raise Unauthorized("Invalid or expired code")
+    return await service.issue_tokens(user)
+
+
+@router.get("/me")
+async def me(user: Annotated[AuthUser, Depends(require_user)]):
+    return {"user_id": user.user_id, "email": user.email, "tenant_id": user.tenant_id}

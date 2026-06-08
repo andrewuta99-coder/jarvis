@@ -1,0 +1,182 @@
+"""Auth core: bcrypt hashing, JWT issue/verify, refresh rotation, tenant isolation."""
+from __future__ import annotations
+
+import os
+import time
+import uuid
+from dataclasses import dataclass
+
+import bcrypt
+from boto3.dynamodb.conditions import Key
+from jose import JWTError, jwt
+
+from core import dynamodb as ddb
+from core import secrets as secrets_module
+
+JWT_ALG = "HS256"
+ACCESS_TTL_SECONDS = int(os.environ.get("ACCESS_TTL_SECONDS", "900"))       # 15 min
+REFRESH_TTL_SECONDS = int(os.environ.get("REFRESH_TTL_SECONDS", "604800"))  # 7 days
+BCRYPT_ROUNDS = int(os.environ.get("BCRYPT_ROUNDS", "12"))
+
+
+class UserExistsError(Exception):
+    pass
+
+
+@dataclass
+class User:
+    tenant_id: str
+    user_id: str
+    email: str
+    status: str   # pending | active | disabled
+
+
+def _jwt_secret() -> str:
+    sec = secrets_module.get("jwt")
+    if isinstance(sec, dict):
+        return sec.get("secret_key") or ""
+    return sec or "dev-only-insecure-secret"
+
+
+async def create_pending_user(*, tenant: str, email: str, password: str) -> User:
+    table = ddb.users_table()
+    user_id = str(uuid.uuid4())
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode()
+    try:
+        table.put_item(
+            Item={
+                "tenantId": tenant,
+                "email": email.lower(),
+                "userId": user_id,
+                "passwordHash": hashed,
+                "status": "pending",
+                "createdAt": int(time.time()),
+            },
+            ConditionExpression="attribute_not_exists(email)",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        raise UserExistsError(email)
+    return User(tenant_id=tenant, user_id=user_id, email=email.lower(), status="pending")
+
+
+async def activate_user(*, tenant: str, email: str) -> User:
+    table = ddb.users_table()
+    resp = table.update_item(
+        Key={"tenantId": tenant, "email": email.lower()},
+        UpdateExpression="SET #s = :active, activatedAt = :t",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":active": "active", ":t": int(time.time())},
+        ReturnValues="ALL_NEW",
+    )
+    item = resp["Attributes"]
+    return User(tenant_id=tenant, user_id=item["userId"], email=item["email"], status=item["status"])
+
+
+async def authenticate(*, tenant: str, email: str, password: str) -> User | None:
+    table = ddb.users_table()
+    resp = table.get_item(Key={"tenantId": tenant, "email": email.lower()})
+    item = resp.get("Item")
+    if not item or item.get("status") != "active":
+        # Always run bcrypt to keep timing constant whether the user exists or not.
+        bcrypt.checkpw(password.encode(), b"$2b$12$" + b"x" * 53)
+        return None
+    if not bcrypt.checkpw(password.encode(), item["passwordHash"].encode()):
+        return None
+    return User(tenant_id=tenant, user_id=item["userId"], email=item["email"], status="active")
+
+
+async def issue_tokens(user: User) -> dict:
+    now = int(time.time())
+    access_claims = {
+        "sub": user.user_id,
+        "email": user.email,
+        "tenant_id": user.tenant_id,
+        "iat": now,
+        "exp": now + ACCESS_TTL_SECONDS,
+        "type": "access",
+    }
+    refresh_jti = str(uuid.uuid4())
+    refresh_claims = {
+        "sub": user.user_id,
+        "tenant_id": user.tenant_id,
+        "iat": now,
+        "exp": now + REFRESH_TTL_SECONDS,
+        "type": "refresh",
+        "jti": refresh_jti,
+    }
+    access = jwt.encode(access_claims, _jwt_secret(), algorithm=JWT_ALG)
+    refresh = jwt.encode(refresh_claims, _jwt_secret(), algorithm=JWT_ALG)
+
+    # Track refresh in sessions table — rotation invalidates the old jti
+    ddb.sessions_table().put_item(Item={
+        "session_id": refresh_jti,
+        "userId": user.user_id,
+        "tenantId": user.tenant_id,
+        "expires_at": now + REFRESH_TTL_SECONDS,
+        "createdAt": now,
+    })
+
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "expires_in": ACCESS_TTL_SECONDS,
+    }
+
+
+async def refresh_tokens(refresh_token: str) -> dict:
+    try:
+        claims = jwt.decode(refresh_token, _jwt_secret(), algorithms=[JWT_ALG])
+    except JWTError:
+        from core.errors import Unauthorized
+        raise Unauthorized("Invalid refresh token")
+
+    if claims.get("type") != "refresh":
+        from core.errors import Unauthorized
+        raise Unauthorized("Wrong token type")
+
+    jti = claims["jti"]
+    sess_table = ddb.sessions_table()
+    sess = sess_table.get_item(Key={"session_id": jti}).get("Item")
+    if not sess:
+        from core.errors import Unauthorized
+        raise Unauthorized("Refresh token revoked")
+    # Rotation — invalidate the old refresh
+    sess_table.delete_item(Key={"session_id": jti})
+
+    # Reissue
+    user = User(
+        tenant_id=claims["tenant_id"],
+        user_id=claims["sub"],
+        email="",   # not in refresh claims; route handler can re-fetch if needed
+        status="active",
+    )
+    return await issue_tokens(user)
+
+
+async def revoke_refresh(refresh_token: str) -> None:
+    try:
+        claims = jwt.decode(refresh_token, _jwt_secret(), algorithms=[JWT_ALG])
+    except JWTError:
+        return
+    jti = claims.get("jti")
+    if jti:
+        ddb.sessions_table().delete_item(Key={"session_id": jti})
+
+
+async def reset_password(*, tenant: str, code: str, new_password: str) -> User | None:
+    # Stub: delegate to signup_verification to validate the code, then update password.
+    from . import signup_verification
+    email = await signup_verification.consume_reset_code(tenant=tenant, code=code)
+    if email is None:
+        return None
+    table = ddb.users_table()
+    hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode()
+    resp = table.update_item(
+        Key={"tenantId": tenant, "email": email},
+        UpdateExpression="SET passwordHash = :p, passwordResetAt = :t",
+        ExpressionAttributeValues={":p": hashed, ":t": int(time.time())},
+        ReturnValues="ALL_NEW",
+    )
+    item = resp["Attributes"]
+    return User(tenant_id=tenant, user_id=item["userId"], email=item["email"], status=item["status"])

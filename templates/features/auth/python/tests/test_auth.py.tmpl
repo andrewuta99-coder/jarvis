@@ -1,0 +1,101 @@
+"""Auth integration tests — moto-backed, no real AWS."""
+import pytest
+
+
+def test_signup_then_verify_then_login(client, monkeypatch):
+    """Happy path: signup -> verify -> login returns valid tokens."""
+    # Monkeypatch the code-issuing email send to capture the code
+    captured = {}
+
+    async def fake_send(*, to, template, vars):
+        captured["code"] = vars.get("code")
+
+    monkeypatch.setattr("email.service.send_email", fake_send, raising=False)
+
+    # 1. Signup
+    r = client.post("/api/auth/signup", json={
+        "email": "alice@example.com",
+        "password": "supersecret-123",
+        "tenant_id": "test-app",
+    })
+    assert r.status_code == 202
+
+    # 2. Verify
+    code = captured.get("code")
+    assert code, "expected code to be issued"
+    r = client.post("/api/auth/verify", json={
+        "email": "alice@example.com",
+        "code": code,
+        "tenant_id": "test-app",
+    })
+    assert r.status_code == 200
+    tokens = r.json()
+    assert tokens["access_token"]
+    assert tokens["refresh_token"]
+
+    # 3. Login
+    r = client.post("/api/auth/login", json={
+        "email": "alice@example.com",
+        "password": "supersecret-123",
+        "tenant_id": "test-app",
+    })
+    assert r.status_code == 200
+
+    # 4. Authenticated request
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    r = client.get("/api/auth/me", headers=headers)
+    assert r.status_code == 200
+    assert r.json()["email"] == "alice@example.com"
+    assert r.json()["tenant_id"] == "test-app"
+
+
+def test_signup_duplicate_email_returns_409(client, monkeypatch):
+    monkeypatch.setattr("email.service.send_email",
+                        lambda **kw: None, raising=False)
+
+    r1 = client.post("/api/auth/signup", json={
+        "email": "bob@example.com", "password": "supersecret-123", "tenant_id": "test-app",
+    })
+    assert r1.status_code == 202
+
+    r2 = client.post("/api/auth/signup", json={
+        "email": "bob@example.com", "password": "supersecret-123", "tenant_id": "test-app",
+    })
+    assert r2.status_code == 409
+
+
+def test_login_wrong_password_returns_401(client, monkeypatch):
+    captured = {}
+    async def fake_send(*, to, template, vars):
+        captured["code"] = vars.get("code")
+    monkeypatch.setattr("email.service.send_email", fake_send, raising=False)
+
+    client.post("/api/auth/signup", json={
+        "email": "carol@example.com", "password": "supersecret-123", "tenant_id": "test-app",
+    })
+    client.post("/api/auth/verify", json={
+        "email": "carol@example.com", "code": captured["code"], "tenant_id": "test-app",
+    })
+
+    r = client.post("/api/auth/login", json={
+        "email": "carol@example.com", "password": "wrong-password", "tenant_id": "test-app",
+    })
+    assert r.status_code == 401
+
+
+def test_tenant_isolation_prevents_cross_tenant_login(client, monkeypatch):
+    """Same email in two different tenants — separate user records."""
+    captured = {}
+    async def fake_send(*, to, template, vars):
+        captured.setdefault("codes", []).append(vars.get("code"))
+    monkeypatch.setattr("email.service.send_email", fake_send, raising=False)
+
+    # Tenant A
+    client.post("/api/auth/signup", json={
+        "email": "dana@example.com", "password": "pwA-12345678", "tenant_id": "tenant-a",
+    })
+    # Tenant B with same email
+    r = client.post("/api/auth/signup", json={
+        "email": "dana@example.com", "password": "pwB-12345678", "tenant_id": "tenant-b",
+    })
+    assert r.status_code == 202   # NOT 409 — tenants are isolated

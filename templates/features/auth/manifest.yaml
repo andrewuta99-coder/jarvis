@@ -1,0 +1,20 @@
+feature: auth
+version: 0.0.1
+specialist: jarvis-auth
+description: |
+  JWT auth. The 2026-01-28 CloudMortgage hardening — HMAC-SHA256 codes,
+  constant-time verify, per-tenant rate limit — is the default.
+
+inputs:
+  required: [table_names, task_role_name, region, app_name, backend]
+outputs: [auth_routes_openapi, jwt_secret_arn, hmac_secret_arn]
+
+files:
+  always:
+    - { src: python/__init__.py.tmpl,            dst: backend/auth/__init__.py }
+    - { src: python/routes.py.tmpl,              dst: backend/auth/routes.py }
+    - { src: python/service.py.tmpl,             dst: backend/auth/service.py }
+    - { src: python/signup_verification.py.tmpl, dst: backend/auth/signup_verification.py }
+    - { src: python/tests/test_auth.py.tmpl,     dst: backend/tests/test_auth.py }
+    - { src: iac/iam_policy.tf.tmpl,             dst: iac/iam/auth_policy.tf }
+    - { src: iac/secrets.tf.tmpl,                dst: iac/secrets/auth_secrets.tf }

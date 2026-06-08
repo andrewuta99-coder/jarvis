@@ -1,0 +1,26 @@
+feature: ai
+version: 0.0.1
+specialist: jarvis-ai
+description: |
+  Bedrock Agent + Knowledge Base + OpenSearch Serverless. Multi-model IAM
+  wildcard (swap Nova/Claude without IAM redeploy — the 2026-01-16 fix).
+  aoss:BatchGetCollection on task role (the 2026-01-16 KB init fix).
+
+inputs:
+  required: [region, app_name, account_id, task_role_name, private_subnet_ids, security_group_vpce_id]
+
+outputs: [agent_id, agent_alias_id, kb_id, opensearch_collection_arn, kb_source_bucket]
+
+files:
+  always:
+    - { src: python/__init__.py.tmpl,   dst: backend/ai/__init__.py }
+    - { src: python/routes.py.tmpl,     dst: backend/ai/routes.py }
+    - { src: python/service.py.tmpl,    dst: backend/ai/service.py }
+    - { src: iac/variables.tf.tmpl,             dst: iac/ai/variables.tf }
+    - { src: iac/kb_source_bucket.tf.tmpl,      dst: iac/ai/kb_source_bucket.tf }
+    - { src: iac/opensearch_collection.tf.tmpl, dst: iac/ai/opensearch_collection.tf }
+    - { src: iac/bedrock_agent.tf.tmpl,         dst: iac/ai/bedrock_agent.tf }
+    - { src: iac/bedrock_kb.tf.tmpl,            dst: iac/ai/bedrock_kb.tf }
+    - { src: iac/iam_agent_role.tf.tmpl,        dst: iac/ai/iam_agent_role.tf }
+    - { src: iac/iam_task_policy.tf.tmpl,       dst: iac/iam/ai_task_policy.tf }
+    - { src: iac/outputs.tf.tmpl,               dst: iac/ai/outputs.tf }
