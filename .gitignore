@@ -4,6 +4,9 @@ bin/*.bun-build
 bin/.version
 .bun-build*
 
+# Private launch strategy — kept local, not shipped publicly
+docs/launch/LAUNCH_CHECKLIST.md
+
 # Node / Bun
 node_modules/
 bun.lock
