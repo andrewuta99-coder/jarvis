@@ -1,0 +1,23 @@
+{
+  "version": "1",
+  "phases": [
+    {
+      "id": "foundation",
+      "parallel": true,
+      "agents": [
+        { "agent": "networking", "writes": ["iac/networking/*.tf"] },
+        { "agent": "infra",      "writes": ["iac/infra/*.tf"] },
+        { "agent": "data",       "writes": ["iac/data/*.tf"] }
+      ]
+    },
+    {
+      "id": "services",
+      "depends_on": ["foundation"],
+      "parallel": true,
+      "agents": [
+        { "agent": "auth",       "writes": ["backend/auth/*"] },
+        { "agent": "ai",         "writes": ["iac/ai/*.tf", "backend/ai/*"] }
+      ]
+    }
+  ]
+}

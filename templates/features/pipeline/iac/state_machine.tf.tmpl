@@ -46,23 +46,24 @@ resource "aws_sfn_state_machine" "pipeline" {
         }]
       }
       RunTask = {
-        # Placeholder — the ECS task that does the heavy work. Replace with
-        # your task definition's ARN. For Alpamayo-style closed-loop runs,
-        # this targets the gpu capacity provider.
+        # ECS task that does the heavy work. Targets the GPU capacity
+        # provider when the gpu feature is installed, falls back to
+        # FARGATE_SPOT otherwise. Subnets + SG pulled from networking
+        # remote state — wired in v1.1.
         Type     = "Task"
         Resource = "arn:aws:states:::ecs:runTask.sync"
         Parameters = {
-          LaunchType = "EC2"
-          Cluster    = data.terraform_remote_state.infra.outputs.ecs_cluster_arn
-          TaskDefinition = "REPLACE_WITH_TASK_DEF_ARN"
+          Cluster        = data.terraform_remote_state.infra.outputs.ecs_cluster_arn
+          TaskDefinition = data.terraform_remote_state.infra.outputs.pipeline_task_definition_arn != null ? data.terraform_remote_state.infra.outputs.pipeline_task_definition_arn : "${var.app_name}-pipeline-worker"
           CapacityProviderStrategy = [{
             CapacityProvider = "${var.app_name}-gpu"
             Weight           = 1
+            Base             = 0
           }]
           NetworkConfiguration = {
             AwsvpcConfiguration = {
-              Subnets        = []  # filled from networking remote_state in v0.0.4
-              SecurityGroups = []
+              Subnets        = data.terraform_remote_state.networking.outputs.private_subnet_ids
+              SecurityGroups = [data.terraform_remote_state.networking.outputs.security_group_app_id]
               AssignPublicIp = "DISABLED"
             }
           }

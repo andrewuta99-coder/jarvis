@@ -1,0 +1,183 @@
+{
+  "version": "1",
+  "template": "ai-saas-cra-fastapi",
+  "phases": [
+    {
+      "id": "foundation",
+      "parallel": true,
+      "agents": [
+        {
+          "agent": "networking",
+          "inputs": ["region", "app_name", "features"],
+          "outputs": [
+            "vpc_id",
+            "private_subnet_ids",
+            "public_subnet_ids",
+            "alb_arn",
+            "alb_dns_name",
+            "security_group_app_id",
+            "security_group_alb_id",
+            "security_group_vpce_id",
+            "acm_certificate_arn"
+          ],
+          "writes": ["iac/networking/*.tf"]
+        },
+        {
+          "agent": "infra",
+          "inputs": ["region", "app_name", "account_id"],
+          "outputs": [
+            "ecs_cluster_arn",
+            "ecs_cluster_name",
+            "ecr_repo_url",
+            "task_execution_role_arn",
+            "task_role_arn",
+            "task_role_name",
+            "github_oidc_role_arn",
+            "terraform_state_bucket",
+            "terraform_state_lock_table",
+            "ecs_log_group_name"
+          ],
+          "writes": ["iac/infra/*.tf"]
+        },
+        {
+          "agent": "data",
+          "inputs": ["region", "app_name", "features"],
+          "outputs": [
+            "table_users_arn", "table_users_name",
+            "table_sessions_arn", "table_sessions_name",
+            "table_signup_codes_arn", "table_signup_codes_name",
+            "table_chat_threads_arn", "table_chat_threads_name",
+            "table_chat_messages_arn", "table_chat_messages_name",
+            "table_customers_arn", "table_customers_name",
+            "table_subscriptions_arn", "table_subscriptions_name",
+            "table_idempotency_arn", "table_idempotency_name",
+            "table_email_suppression_arn", "table_email_suppression_name"
+          ],
+          "writes": ["iac/data/*.tf"]
+        }
+      ]
+    },
+    {
+      "id": "services",
+      "depends_on": ["foundation"],
+      "parallel": true,
+      "agents": [
+        {
+          "agent": "auth",
+          "inputs": [
+            "table_users_name", "table_sessions_name", "table_signup_codes_name",
+            "task_role_name", "region", "app_name", "backend"
+          ],
+          "outputs": ["auth_routes_openapi", "jwt_secret_arn", "hmac_secret_arn"],
+          "writes": ["backend/auth/*", "iac/iam/auth_policy.tf", "iac/secrets/auth_secrets.tf"]
+        },
+        {
+          "agent": "ai",
+          "inputs": [
+            "region", "app_name", "account_id",
+            "task_role_name", "private_subnet_ids", "security_group_vpce_id"
+          ],
+          "outputs": [
+            "agent_id", "agent_alias_id", "kb_id",
+            "opensearch_collection_arn", "kb_source_bucket",
+            "bedrock_agent_role_arn"
+          ],
+          "writes": [
+            "iac/ai/*.tf", "iac/iam/ai_task_policy.tf",
+            "backend/ai/*", "tests/integration/test_ai.py"
+          ]
+        },
+        {
+          "agent": "backend",
+          "inputs": [
+            "region", "app_name", "account_id",
+            "ecs_cluster_arn", "ecr_repo_url", "task_role_name",
+            "task_execution_role_arn"
+          ],
+          "outputs": [
+            "backend_image_tag", "ecs_service_arn",
+            "ecs_task_definition_arn", "ecs_service_name",
+            "openapi_spec_path", "alb_target_group_arn"
+          ],
+          "writes": [
+            "backend/main.py", "backend/Dockerfile", "backend/core/*",
+            "backend/tests/*", "iac/ecs/*.tf"
+          ]
+        },
+        {
+          "agent": "frontend",
+          "inputs": ["region", "app_name", "features", "alb_dns_name"],
+          "outputs": ["frontend_build_dir", "amplify_app_id", "amplify_url"],
+          "writes": ["frontend/**/*"]
+        }
+      ]
+    },
+    {
+      "id": "integration",
+      "depends_on": ["services"],
+      "parallel": true,
+      "agents": [
+        {
+          "agent": "email",
+          "inputs": [
+            "region", "app_name", "account_id",
+            "task_role_name", "domain"
+          ],
+          "outputs": [
+            "sender_identity", "noreply_identity",
+            "configuration_set", "ses_vpc_endpoint_arn",
+            "bounce_topic_arn", "complaint_topic_arn",
+            "suppression_table"
+          ],
+          "writes": ["iac/email/*.tf", "iac/iam/email_policy.tf", "backend/email/*", "lambda/email_suppression/*"]
+        },
+        {
+          "agent": "payments",
+          "inputs": [
+            "region", "app_name", "account_id",
+            "task_role_name",
+            "table_customers_name", "table_subscriptions_name", "table_idempotency_name"
+          ],
+          "outputs": ["stripe_secret_arn", "stripe_webhook_url", "customer_portal_route"],
+          "writes": [
+            "iac/payments/*.tf", "iac/iam/payments_policy.tf",
+            "backend/payments/*"
+          ]
+        },
+        {
+          "agent": "deploy",
+          "inputs": [
+            "ecr_repo_url", "github_oidc_role_arn",
+            "ecs_cluster_name", "amplify_app_id",
+            "app_name", "region"
+          ],
+          "outputs": ["github_actions_url", "amplify_branch_url"],
+          "writes": [".github/workflows/*.yml", "iac/deploy/*.tf", "scripts/deploy.sh"]
+        }
+      ]
+    },
+    {
+      "id": "ship",
+      "depends_on": ["integration"],
+      "parallel": false,
+      "agents": [
+        {
+          "agent": "convergence",
+          "inputs": ["*all prior outputs*"],
+          "outputs": ["verdict", "contract_report_path"],
+          "writes": [".jarvis/CONTRACT_REPORT.md"]
+        },
+        {
+          "agent": "ship",
+          "inputs": ["contract_report_path"],
+          "outputs": [
+            "live_url", "amplify_url",
+            "deploy_time_seconds", "cost_idle", "cost_1k_users",
+            "phase_durations", "git_commit"
+          ],
+          "writes": [".jarvis/agent-outputs/ship.json", ".jarvis/deploys.jsonl"]
+        }
+      ]
+    }
+  ]
+}

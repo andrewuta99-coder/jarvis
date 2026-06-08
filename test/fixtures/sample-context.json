@@ -1,0 +1,12 @@
+{
+  "JARVIS_VERSION": "1.3.0",
+  "ISO_DATE": "2026-06-08",
+  "REGION": "us-east-1",
+  "APP_NAME": "test-app",
+  "ACCOUNT_ID": "111122223333",
+  "DOMAIN": "test-app.jarvis.app",
+  "TASK_ROLE_NAME": "test-app-task",
+  "GITHUB_OWNER": "test-owner",
+  "GITHUB_REPO": "test-repo",
+  "features": ["auth", "ai", "email", "payments", "frontend"]
+}

@@ -1,5 +1,57 @@
 # Changelog
 
+## v1.3.0 — 2026-06-08
+
+Launch-ready release. Reference outputs, test suite, CI, launch artifacts.
+Bundles v1.1 + v1.2 + v1.3.
+
+### Added (v1.1)
+- `templates/starters/ai-saas-cra-fastapi/BUILD_SPEC.example.md` — the
+  exact BUILD_SPEC.md that the Architect agent should produce for the
+  AI SaaS starter. Lets any LLM reproduce identical output.
+- `templates/starters/ai-saas-cra-fastapi/CONSTELLATION.example.json` —
+  matching constellation with all 13 specialist agents, full inputs/
+  outputs/writes per agent.
+- `templates/starters/ai-agent/manifest.yaml` — second starter for
+  Bedrock-heavy + Step Functions + GPU-optional agentic apps.
+- Pipeline state machine `RunTask` step now wires Subnets, SecurityGroups,
+  and TaskDefinition from `terraform_remote_state.networking` +
+  `terraform_remote_state.infra` (was a placeholder in v1.0).
+
+### Added (v1.2)
+- `test/test_render.py` — 11 tests: slot substitution, template-hash
+  stability, manifest parsing (block + inline forms), end-to-end render
+  of the real networking feature.
+- `test/test_orchestrate.py` — 5 tests for `requires_feature` dependency
+  resolver and `merge_outputs` context-merging.
+- `test/test_upgrade_migrate.py` — 3 tests for the generated-by header
+  parser used by `jarvis-upgrade-migrate`.
+- `test/run_tests.sh` — stdlib-only test runner (no pytest needed).
+- `scripts/gen-skill-docs` — keeps SKILL.md descriptions in sync with
+  feature manifests. `--check` mode for CI.
+
+### Added (v1.3)
+- `.github/workflows/test.yml` — CI: unit tests + smoke-renders every
+  feature + shellchecks install scripts + verifies SKILL.md sync.
+  All inputs hardcoded — no GitHub-event-interpolation injection risk.
+- `docs/launch/HN_POST.md` — Show HN draft + 5 pre-written replies for
+  common objections.
+- `docs/launch/DEMO_SCRIPT.md` — 30-second screencast storyboard, 4
+  audience variants (HN/IH/YC/conf).
+- `docs/launch/COREY_QUINN_PITCH.md` — Last Week in AWS email pitch.
+- `docs/launch/TWITTER_THREAD.md` — 12-tweet thread, one production
+  scar per tweet.
+- `docs/launch/LAUNCH_CHECKLIST.md` — T-7 / T-1 / T-0 / T+1 / T+7
+  launch-day playbook.
+
+### Verified
+- 19/19 tests pass on Python 3.14 (using SourceFileLoader workaround for
+  extensionless bin scripts).
+- All 14 features render cleanly: networking(12), infra(7), data(11),
+  backend(20), frontend(25), auth(7), ai(11), email(10), payments(7),
+  deploy(4), gpu(9), pipeline(11), rag-langchain(6), rag-langgraph(6).
+  124 generated files total per a full render against sample-context.json.
+
 ## v1.0.0 — 2026-06-08
 
 First public release. From blank AWS account to deployed full-stack app via

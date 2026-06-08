@@ -1,0 +1,79 @@
+# AI Agent Starter — Bedrock-heavy, GPU-optional, Step Functions pipeline
+#
+# Use this when the app is primarily an agentic AI system: long-running
+# document processing, autonomous research, batch inference, closed-loop
+# experiments. Less "user-facing SaaS", more "agent doing work".
+
+starter:
+  id: ai-agent
+  name: AI Agent (Bedrock + Step Functions)
+  description: |
+    Backend-heavy agentic stack. Step Functions orchestrate Bedrock agents
+    and optionally GPU workloads. Pattern from CloudMortgage Alpamayo.
+    Lighter on user UI — comes with an admin dashboard, not a consumer app.
+
+stack:
+  frontend: cra              # minimal admin UI
+  backend: fastapi
+  database: dynamodb
+  hosting:
+    frontend: amplify
+    backend: ecs_fargate_spot
+  pipeline: enabled
+  gpu: optional              # user opts in at init for closed-loop / training runs
+
+features:
+  - auth                     # admin login only
+  - ai                       # Bedrock agent + KB
+  - rag-langgraph            # state-machine reasoning (preferred over rag-langchain for agents)
+  - pipeline                 # Step Functions + S3 inbox
+  - email                    # operator notifications
+
+optional_features:
+  - gpu                      # scale-to-zero EC2 Spot, ~$0 idle
+  - payments                 # if shipped as a paid service
+
+cost_projection:
+  idle: 195                  # USD/mo with GPU at 0
+  at_1k_runs: 280            # +$85 for inference cost on Nova Lite
+  with_gpu_in_use_1hr_per_day: 213   # +$18 for ~30 GPU-hours/mo
+
+constellation:
+  phases:
+    - id: foundation
+      parallel: true
+      agents: [networking, infra, data]
+    - id: services
+      parallel: true
+      agents: [auth, ai, backend, frontend]
+      depends_on: [foundation]
+    - id: integration
+      parallel: true
+      agents: [email, pipeline, deploy]
+      depends_on: [services]
+    - id: advanced
+      parallel: true
+      agents: [rag-langgraph]
+      depends_on: [integration]
+    - id: ship
+      parallel: false
+      agents: [convergence, ship]
+      depends_on: [advanced]
+
+api_layer:
+  enabled: true
+
+risk_callouts:
+  - id: gpu_spot_starvation
+    severity: medium
+    message: |
+      GPU spot capacity is region-AZ-instance-type specific. g5.2xlarge is
+      usually cheap and available; g6e.12xlarge less so. /jarvis-add-gpu
+      adds a CloudWatch alarm on pending-task minutes so you see starvation
+      before it costs you a day.
+  - id: rag_langgraph_dep_size
+    severity: low
+    message: |
+      LangGraph + LangChain add ~80MB to your container. If cold-start time
+      matters (Lambda), use the default ai feature's boto3 invoke_agent
+      instead. ECS doesn't notice.

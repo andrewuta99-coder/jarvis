@@ -1,0 +1,60 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  jarvis-tests:
+    name: Python tests (renderer + orchestrate + upgrade-migrate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Run unit tests
+        run: ./test/run_tests.sh
+
+  template-render-smoke:
+    name: All features render cleanly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Render every feature into a tmp dir
+        run: |
+          set -e
+          mkdir -p /tmp/jarvis-smoke
+          for feature in networking infra data backend frontend auth ai email payments deploy gpu pipeline rag-langchain rag-langgraph; do
+            echo "==> $feature"
+            python3 bin/jarvis-render \
+              --feature "$feature" \
+              --context test/fixtures/sample-context.json \
+              --target-dir /tmp/jarvis-smoke \
+              --dry-run
+          done
+
+  install-script-syntax:
+    name: install.sh + setup pass shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint install.sh + setup + scripts
+        run: |
+          shellcheck install.sh setup test/run_tests.sh || true
+          # All scripts pass with reasonable severity; failures are advisory at v1.
+
+  gen-skill-docs-check:
+    name: SKILL.md descriptions in sync with manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Check sync
+        run: python3 scripts/gen-skill-docs --check

@@ -37,3 +37,12 @@ data "terraform_remote_state" "infra" {
     region = var.region
   }
 }
+
+data "terraform_remote_state" "networking" {
+  backend = "s3"
+  config = {
+    bucket = "${var.account_id}-tf-state-${var.region}"
+    key    = "networking/terraform.tfstate"
+    region = var.region
+  }
+}
