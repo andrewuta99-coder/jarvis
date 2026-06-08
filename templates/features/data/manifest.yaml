@@ -1,0 +1,50 @@
+feature: data
+version: 0.0.1
+specialist: jarvis-data
+description: |
+  DynamoDB tables. Every table ships with PITR + prevent_destroy +
+  deletion_protection + ignore_changes on attribute/GSI. The 2026-01-18
+  CloudMortgage data-loss incident class is dead.
+
+inputs:
+  required: [region, app_name]
+  optional:
+    features: []   # which feature flags drive which tables
+
+outputs:
+  - table_names
+  - table_arns
+  - iam_policy_fragments
+
+files:
+  always:
+    - { src: variables.tf.tmpl,  dst: iac/data/variables.tf }
+    - { src: outputs.tf.tmpl,    dst: iac/data/outputs.tf }
+  conditional:
+    - if_feature: auth
+      src: users_v2.tf.tmpl
+      dst: iac/data/users_v2.tf
+    - if_feature: auth
+      src: sessions.tf.tmpl
+      dst: iac/data/sessions.tf
+    - if_feature: auth
+      src: signup_codes.tf.tmpl
+      dst: iac/data/signup_codes.tf
+    - if_feature: ai
+      src: chat_threads.tf.tmpl
+      dst: iac/data/chat_threads.tf
+    - if_feature: ai
+      src: chat_messages.tf.tmpl
+      dst: iac/data/chat_messages.tf
+    - if_feature: payments
+      src: customers.tf.tmpl
+      dst: iac/data/customers.tf
+    - if_feature: payments
+      src: subscriptions.tf.tmpl
+      dst: iac/data/subscriptions.tf
+    - if_feature: payments
+      src: idempotency.tf.tmpl
+      dst: iac/data/idempotency.tf
+    - if_feature: email
+      src: email_suppression.tf.tmpl
+      dst: iac/data/email_suppression.tf

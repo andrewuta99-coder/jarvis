@@ -1,0 +1,31 @@
+feature: infra
+version: 0.0.1
+specialist: jarvis-infra
+description: ECS cluster, ECR, base IAM roles, GitHub Actions OIDC, Terraform backend.
+
+inputs:
+  required: [region, app_name, account_id]
+  optional:
+    github_owner: ""
+    github_repo: ""
+    environment: prod
+
+outputs:
+  - ecs_cluster_arn
+  - ecs_cluster_name
+  - ecr_repo_url
+  - task_exec_role_arn
+  - task_exec_role_name
+  - github_oidc_role_arn
+  - terraform_state_bucket
+  - terraform_state_lock_table
+
+files:
+  always:
+    - { src: variables.tf.tmpl,           dst: iac/infra/variables.tf }
+    - { src: backend_bootstrap.tf.tmpl,   dst: iac/infra/backend_bootstrap.tf }
+    - { src: ecs_cluster.tf.tmpl,         dst: iac/infra/ecs_cluster.tf }
+    - { src: ecr.tf.tmpl,                 dst: iac/infra/ecr.tf }
+    - { src: iam_task_exec_role.tf.tmpl,  dst: iac/infra/iam_task_exec_role.tf }
+    - { src: iam_github_oidc.tf.tmpl,     dst: iac/infra/iam_github_oidc.tf }
+    - { src: outputs.tf.tmpl,             dst: iac/infra/outputs.tf }

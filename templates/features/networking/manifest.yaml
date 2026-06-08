@@ -1,0 +1,45 @@
+feature: networking
+version: 0.0.1
+specialist: jarvis-networking
+description: VPC, subnets, ALB, security groups, and per-service VPC endpoints. No NAT.
+
+inputs:
+  required: [region, app_name, account_id]
+  optional:
+    environment: prod
+    cidr_block: "10.0.0.0/16"
+
+outputs:
+  - vpc_id
+  - private_subnet_ids
+  - public_subnet_ids
+  - alb_arn
+  - alb_dns_name
+  - security_group_app_id
+  - security_group_alb_id
+  - security_group_vpce_id
+
+files:
+  always:
+    - { src: variables.tf.tmpl,         dst: iac/networking/variables.tf }
+    - { src: backend.tf.tmpl,           dst: iac/networking/backend.tf }
+    - { src: vpc.tf.tmpl,               dst: iac/networking/vpc.tf }
+    - { src: subnets.tf.tmpl,           dst: iac/networking/subnets.tf }
+    - { src: alb.tf.tmpl,               dst: iac/networking/alb.tf }
+    - { src: security_groups.tf.tmpl,   dst: iac/networking/security_groups.tf }
+    - { src: vpc_endpoints_gateway.tf.tmpl,   dst: iac/networking/vpc_endpoints_gateway.tf }
+    - { src: vpc_endpoints_baseline.tf.tmpl,  dst: iac/networking/vpc_endpoints_baseline.tf }
+    - { src: outputs.tf.tmpl,           dst: iac/networking/outputs.tf }
+  conditional:
+    - if_feature: email
+      src: vpc_endpoint_ses.tf.tmpl
+      dst: iac/networking/vpc_endpoint_ses.tf
+    - if_feature: ai
+      src: vpc_endpoint_bedrock.tf.tmpl
+      dst: iac/networking/vpc_endpoint_bedrock.tf
+    - if_feature: ai
+      src: vpc_endpoint_aoss.tf.tmpl
+      dst: iac/networking/vpc_endpoint_aoss.tf
+    - if_feature: jobs
+      src: vpc_endpoint_states.tf.tmpl
+      dst: iac/networking/vpc_endpoint_states.tf
