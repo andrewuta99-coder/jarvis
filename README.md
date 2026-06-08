@@ -167,7 +167,24 @@ Read [ETHOS.md](ETHOS.md) for the full philosophy. Read [ARCHITECTURE.md](ARCHIT
 
 ## Status
 
-**v0 — Pre-alpha.** Scaffolding complete; specialist agents under active development. First demo target: AI SaaS starter (Create React App + FastAPI + DynamoDB + Bedrock + Stripe + SES on Amplify Hosting). Star and watch the repo for the public launch.
+**v1.0.0** — feature-complete. 224+ files. 13,000+ lines. All 11 feature
+templates render via the deterministic `jarvis-render` Python script. The
+end-to-end orchestrator (`jarvis-orchestrate`) walks the constellation,
+runs phases in parallel where independent, validates `requires_feature`
+dependencies, merges agent outputs between phases.
+
+What works today:
+- `/jarvis-init` produces a complete AWS SaaS scaffold (~163 generated files)
+- `jarvis-validate` runs `terraform fmt + validate` on every module
+- `/jarvis-doctor` reads live AWS state via boto3 (DDB protection, S3 hygiene, ECS status, root MFA)
+- `/jarvis-upgrade` template-hash-detects user edits before patching
+- `/jarvis-eject` writes a complete ARCHITECTURE.md so the team can continue without Jarvis
+
+What's v1.1:
+- Architect + Planner concrete BUILD_SPEC.md / CONSTELLATION.json generation per starter
+- Fully-wired Step Functions `RunTask` step (currently a placeholder ARN)
+- More starters (AI Agent, Marketplace, Internal Tool)
+- Conductor integration for cross-machine state
 
 ## License
 

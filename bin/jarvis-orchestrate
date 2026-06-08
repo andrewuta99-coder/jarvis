@@ -38,6 +38,32 @@ def run_feature(*, jarvis_dir: Path, feature: str, context_path: Path, target_di
     return (feature, proc.returncode, proc.stderr + proc.stdout)
 
 
+def validate_requirements(constellation: dict, jarvis_dir: Path) -> list[str]:
+    """For each agent in the constellation, check its feature manifest for
+    requires_feature and verify the required feature is also in the constellation."""
+    errors: list[str] = []
+    declared = set()
+    for phase in constellation.get("phases", []):
+        for agent in phase.get("agents", []):
+            declared.add(agent["agent"])
+
+    for phase in constellation.get("phases", []):
+        for agent in phase.get("agents", []):
+            feature_name = agent["agent"]
+            manifest_path = jarvis_dir / "templates" / "features" / feature_name / "manifest.yaml"
+            if not manifest_path.exists():
+                continue
+            text = manifest_path.read_text()
+            for line in text.splitlines():
+                if line.startswith("requires_feature:"):
+                    req = line.split(":", 1)[1].strip()
+                    if req and req not in declared:
+                        errors.append(
+                            f"Feature '{feature_name}' requires '{req}', but '{req}' is not in the constellation."
+                        )
+    return errors
+
+
 def merge_outputs(target_dir: Path, context: dict) -> dict:
     """After a phase, read .jarvis/agent-outputs/*.json and merge into context."""
     outputs_dir = target_dir / ".jarvis" / "agent-outputs"
@@ -75,6 +101,13 @@ def main() -> int:
 
     print(f"Orchestrating: {constellation_path}")
     print(f"  phases: {len(constellation.get('phases', []))}")
+
+    req_errors = validate_requirements(constellation, args.jarvis_dir)
+    if req_errors:
+        print("\nFAIL: feature requirements not satisfied:", file=sys.stderr)
+        for err in req_errors:
+            print(f"  - {err}", file=sys.stderr)
+        return 1
 
     phase_durations: dict[str, float] = {}
 

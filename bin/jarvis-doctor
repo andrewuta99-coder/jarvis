@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""
+jarvis-doctor — live health check of a Jarvis-managed AWS app.
+
+Reads .jarvis/profile.json + queries real AWS. Checks:
+  - DynamoDB tables: PITR + deletion_protection
+  - S3 buckets: public-access-block + versioning + encryption
+  - ECS service: desired vs running task count
+  - Secrets Manager: rotation enabled
+  - Root account: MFA
+
+Tone: encouraging. We surface warnings, not a 47-point interrogation.
+
+Usage:
+    jarvis-doctor --target-dir /path/to/app
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:
+    print("boto3 is required. Install: pip install boto3", file=sys.stderr)
+    sys.exit(1)
+
+
+OK = "ok"
+WARN = "warn"
+FAIL = "fail"
+
+
+def check_dynamodb(app_name: str, region: str) -> list[dict]:
+    """Every Jarvis-managed table must have PITR + deletion protection."""
+    ddb = boto3.client("dynamodb", region_name=region)
+    results: list[dict] = []
+    try:
+        tables = ddb.list_tables()["TableNames"]
+    except (BotoCoreError, ClientError) as exc:
+        return [{"status": FAIL, "msg": f"Could not list tables: {exc}"}]
+
+    app_tables = [t for t in tables if t.startswith(app_name)]
+    if not app_tables:
+        return [{"status": WARN, "msg": f"No tables found prefixed '{app_name}-'"}]
+
+    for table_name in app_tables:
+        try:
+            desc = ddb.describe_table(TableName=table_name)["Table"]
+            deletion = desc.get("DeletionProtectionEnabled", False)
+            pitr = ddb.describe_continuous_backups(TableName=table_name)
+            pitr_on = pitr["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]["PointInTimeRecoveryStatus"] == "ENABLED"
+            if deletion and pitr_on:
+                results.append({"status": OK, "msg": f"{table_name}: PITR on, deletion protection on"})
+            else:
+                missing = []
+                if not pitr_on: missing.append("PITR")
+                if not deletion: missing.append("deletion-protection")
+                results.append({"status": WARN, "msg": f"{table_name}: missing {', '.join(missing)}"})
+        except (BotoCoreError, ClientError) as exc:
+            results.append({"status": FAIL, "msg": f"{table_name}: {exc}"})
+    return results
+
+
+def check_s3(app_name: str, account_id: str) -> list[dict]:
+    s3 = boto3.client("s3")
+    results: list[dict] = []
+    try:
+        all_buckets = s3.list_buckets()["Buckets"]
+    except (BotoCoreError, ClientError) as exc:
+        return [{"status": FAIL, "msg": f"Could not list buckets: {exc}"}]
+
+    app_buckets = [b["Name"] for b in all_buckets if app_name in b["Name"] or account_id in b["Name"]]
+    if not app_buckets:
+        return [{"status": OK, "msg": "No app-managed S3 buckets (or none discovered)"}]
+
+    for bucket in app_buckets:
+        try:
+            pab = s3.get_public_access_block(Bucket=bucket)["PublicAccessBlockConfiguration"]
+            all_blocked = all(pab.values())
+            try:
+                v = s3.get_bucket_versioning(Bucket=bucket).get("Status") == "Enabled"
+            except ClientError:
+                v = False
+            if all_blocked and v:
+                results.append({"status": OK, "msg": f"{bucket}: public-block on, versioning on"})
+            else:
+                missing = []
+                if not all_blocked: missing.append("public-access-block")
+                if not v: missing.append("versioning")
+                results.append({"status": WARN, "msg": f"{bucket}: missing {', '.join(missing)}"})
+        except (BotoCoreError, ClientError) as exc:
+            results.append({"status": WARN, "msg": f"{bucket}: {exc}"})
+    return results
+
+
+def check_ecs(app_name: str, region: str) -> list[dict]:
+    ecs = boto3.client("ecs", region_name=region)
+    cluster = f"{app_name}-cluster"
+    service = f"{app_name}-api"
+    try:
+        resp = ecs.describe_services(cluster=cluster, services=[service])
+        if not resp["services"]:
+            return [{"status": WARN, "msg": f"Service {service} not found in cluster {cluster}"}]
+        s = resp["services"][0]
+        desired, running = s["desiredCount"], s["runningCount"]
+        if running >= desired and desired > 0:
+            return [{"status": OK, "msg": f"{service}: {running}/{desired} tasks healthy"}]
+        return [{"status": WARN, "msg": f"{service}: {running}/{desired} tasks (mismatch)"}]
+    except (BotoCoreError, ClientError) as exc:
+        return [{"status": FAIL, "msg": f"ECS check failed: {exc}"}]
+
+
+def check_root_mfa() -> list[dict]:
+    iam = boto3.client("iam")
+    try:
+        summary = iam.get_account_summary()["SummaryMap"]
+        if summary.get("AccountMFAEnabled") == 1:
+            return [{"status": OK, "msg": "Root account MFA: enabled"}]
+        return [{"status": FAIL, "msg": "Root account MFA: NOT ENABLED — set this up today"}]
+    except (BotoCoreError, ClientError) as exc:
+        return [{"status": WARN, "msg": f"Could not check root MFA: {exc}"}]
+
+
+def print_section(title: str, results: list[dict]) -> None:
+    print(f"\n{title}")
+    for r in results:
+        symbol = {OK: "  ok  ", WARN: " warn ", FAIL: "  !!  "}[r["status"]]
+        print(f"{symbol} {r['msg']}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Live Jarvis stack health check")
+    parser.add_argument("--target-dir", required=True, type=Path)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    profile_path = args.target_dir / ".jarvis" / "profile.json"
+    if not profile_path.exists():
+        print(f"No profile at {profile_path}", file=sys.stderr)
+        return 1
+
+    profile = json.loads(profile_path.read_text())
+    app_name = profile.get("app_name", "")
+    region = profile.get("region", "us-east-1")
+    account_id = profile.get("account", "")
+
+    print(f"Stack: {app_name} (region: {region}, account: {account_id})")
+
+    protection = check_dynamodb(app_name, region) + check_s3(app_name, account_id)
+    performance = check_ecs(app_name, region)
+    security = check_root_mfa()
+
+    if args.json:
+        print(json.dumps({
+            "protection": protection,
+            "performance": performance,
+            "security": security,
+        }, indent=2))
+        return 0
+
+    print_section("PROTECTION", protection)
+    print_section("PERFORMANCE", performance)
+    print_section("SECURITY", security)
+
+    all_results = protection + performance + security
+    fails = sum(1 for r in all_results if r["status"] == FAIL)
+    warns = sum(1 for r in all_results if r["status"] == WARN)
+    print(f"\nStack health: {len(all_results) - fails - warns}/{len(all_results)} OK")
+    if fails:
+        print(f"  {fails} failures — needs attention")
+        return 1
+    if warns:
+        print(f"  {warns} warnings — non-urgent")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

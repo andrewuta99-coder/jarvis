@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""
+jarvis-validate — run terraform fmt + terraform validate on every rendered
+module without applying. Used by Convergence agent + CI to catch broken
+templates before Ship.
+
+Usage:
+    jarvis-validate --target-dir /path/to/app
+    jarvis-validate --target-dir /path/to/app --modules networking infra data
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+def find_modules(target_dir: Path, only: list[str] | None = None) -> list[Path]:
+    iac_dir = target_dir / "iac"
+    if not iac_dir.exists():
+        return []
+    modules = sorted(d for d in iac_dir.iterdir() if d.is_dir() and any(d.glob("*.tf")))
+    if only:
+        modules = [m for m in modules if m.name in only]
+    return modules
+
+
+def run(cmd: list[str], cwd: Path) -> tuple[int, str]:
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    return proc.returncode, (proc.stderr or proc.stdout)
+
+
+def validate_module(module: Path) -> dict:
+    result = {"module": module.name, "fmt": None, "init": None, "validate": None, "errors": []}
+
+    rc, out = run(["terraform", "fmt", "-check", "-recursive"], cwd=module)
+    result["fmt"] = "ok" if rc == 0 else "fail"
+    if rc != 0:
+        result["errors"].append({"step": "fmt", "output": out.strip()[:1000]})
+
+    # init -backend=false: don't actually create the S3 backend; we just need
+    # providers + modules resolved to validate.
+    rc, out = run(["terraform", "init", "-backend=false", "-input=false", "-no-color"], cwd=module)
+    result["init"] = "ok" if rc == 0 else "fail"
+    if rc != 0:
+        result["errors"].append({"step": "init", "output": out.strip()[:1000]})
+        return result
+
+    rc, out = run(["terraform", "validate", "-no-color"], cwd=module)
+    result["validate"] = "ok" if rc == 0 else "fail"
+    if rc != 0:
+        result["errors"].append({"step": "validate", "output": out.strip()[:1000]})
+
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate rendered Jarvis Terraform")
+    parser.add_argument("--target-dir", required=True, type=Path)
+    parser.add_argument("--modules", nargs="*", help="Specific modules (default: all)")
+    args = parser.parse_args()
+
+    if not subprocess.run(["which", "terraform"], capture_output=True).returncode == 0:
+        print("ERROR: terraform not on PATH. Install: https://developer.hashicorp.com/terraform/install", file=sys.stderr)
+        return 1
+
+    modules = find_modules(args.target_dir, args.modules)
+    if not modules:
+        print("No iac/ modules found. Run /jarvis-init first.", file=sys.stderr)
+        return 1
+
+    print(f"Validating {len(modules)} module(s):")
+    results = []
+    for module in modules:
+        print(f"  - {module.name}...", end=" ", flush=True)
+        result = validate_module(module)
+        results.append(result)
+        all_ok = all(result.get(k) == "ok" for k in ("fmt", "init", "validate"))
+        print("OK" if all_ok else "FAIL")
+
+    failures = [r for r in results if any(r.get(k) == "fail" for k in ("fmt", "init", "validate"))]
+    if failures:
+        print("\n=== Failures ===")
+        for r in failures:
+            print(f"\n[{r['module']}]")
+            for err in r["errors"]:
+                print(f"  step: {err['step']}")
+                for line in err["output"].splitlines()[:20]:
+                    print(f"    {line}")
+        return 1
+
+    print("\nAll modules pass terraform fmt + init + validate.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
