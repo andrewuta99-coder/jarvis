@@ -90,8 +90,15 @@ SKILLS=(
   init add-users add-files add-email add-ai add-payments
   add-jobs add-realtime add-phone add-domain
   deploy rollback doctor cost scale backup adopt eject
-  jarvis-upgrade careful freeze
+  upgrade careful freeze
 )
+
+# Clean up any stale jarvis-* symlinks from prior installs before re-linking.
+# This handles renames (e.g. jarvis-jarvis-upgrade -> jarvis-upgrade) and
+# removed skills cleanly without leaving orphaned broken symlinks behind.
+for stale in "$SKILLS_ROOT"/jarvis-*; do
+  [ -L "$stale" ] && rm -f "$stale"
+done
 
 for skill in "${SKILLS[@]}"; do
   if [ -d "$JARVIS_DIR/$skill" ]; then
