@@ -1,0 +1,132 @@
+/**
+ * Central fetch wrapper. Pattern from CloudMortgage Lender UI client.js.
+ *
+ * Responsibilities:
+ *  - Build the full URL from REACT_APP_API_BASE
+ *  - Inject Authorization: Bearer <access>
+ *  - Inject X-Org-Id when an org context is set (multi-tenant)
+ *  - On 401, attempt refresh-token rotation once; retry the original request
+ *  - Surface JSON errors to a consistent shape
+ *  - Global handler hook for hard auth failures (logout redirect)
+ */
+import {
+  getAccessToken,
+  getRefreshToken,
+  setTokens,
+  clearTokens,
+  isExpired,
+} from "../utils/secureTokenStorage";
+
+// ─── Base URL resolution ────────────────────────────────────────────────
+function resolveBaseURL() {
+  if (process.env.REACT_APP_API_BASE) return process.env.REACT_APP_API_BASE.replace(/\/$/, "");
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host === "localhost" || host === "127.0.0.1") return "http://localhost:8000";
+    // Production fallback — set REACT_APP_API_BASE in Amplify env vars.
+    return `https://${host}`;
+  }
+  return "";
+}
+export const BASE_URL = resolveBaseURL();
+
+// ─── Org context (multi-tenant header) ──────────────────────────────────
+let _orgId = null;
+export function setOrgContext(orgId) { _orgId = orgId; }
+export function getOrgContext() { return _orgId; }
+
+// ─── Global auth-failure handler ────────────────────────────────────────
+let _onAuthFail = null;
+export function setGlobalAuthErrorHandler(fn) { _onAuthFail = fn; }
+
+// ─── Token-refresh dance ────────────────────────────────────────────────
+let _refreshing = null;   // singleton in-flight refresh, prevents stampede
+
+async function attemptRefresh() {
+  if (_refreshing) return _refreshing;
+  _refreshing = (async () => {
+    const refresh = getRefreshToken();
+    if (!refresh) return false;
+    try {
+      const resp = await fetch(`${BASE_URL}/api/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refresh }),
+      });
+      if (!resp.ok) return false;
+      const data = await resp.json();
+      setTokens({
+        access: data.access_token,
+        refresh: data.refresh_token,
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setTimeout(() => { _refreshing = null; }, 0);
+    }
+  })();
+  return _refreshing;
+}
+
+// ─── Headers ────────────────────────────────────────────────────────────
+function buildHeaders(extra = {}) {
+  const headers = { "Content-Type": "application/json", ...extra };
+  const token = getAccessToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (_orgId) headers["X-Org-Id"] = _orgId;
+  return headers;
+}
+
+// ─── Main entry point ───────────────────────────────────────────────────
+export async function fetchWithAuth(path, options = {}) {
+  // Proactive refresh when we know access is expired
+  if (isExpired()) await attemptRefresh();
+
+  const url = path.startsWith("http") ? path : `${BASE_URL}${path}`;
+  const headers = buildHeaders(options.headers);
+  let resp = await fetch(url, { ...options, headers });
+
+  if (resp.status === 401) {
+    const refreshed = await attemptRefresh();
+    if (refreshed) {
+      resp = await fetch(url, { ...options, headers: buildHeaders(options.headers) });
+    } else {
+      clearTokens();
+      if (_onAuthFail) _onAuthFail();
+      throw await asError(resp);
+    }
+  }
+
+  if (!resp.ok) throw await asError(resp);
+  if (resp.status === 204) return null;
+  return resp.json();
+}
+
+async function asError(resp) {
+  let body;
+  try { body = await resp.json(); } catch { body = null; }
+  const message = body?.error?.message || resp.statusText || `HTTP ${resp.status}`;
+  const error = new Error(message);
+  error.status = resp.status;
+  error.code = body?.error?.code;
+  error.details = body?.error?.details;
+  return error;
+}
+
+// Convenience methods
+export const api = {
+  get:    (path, opts) => fetchWithAuth(path, { ...opts, method: "GET" }),
+  post:   (path, body, opts) => fetchWithAuth(path, { ...opts, method: "POST", body: JSON.stringify(body) }),
+  put:    (path, body, opts) => fetchWithAuth(path, { ...opts, method: "PUT", body: JSON.stringify(body) }),
+  patch:  (path, body, opts) => fetchWithAuth(path, { ...opts, method: "PATCH", body: JSON.stringify(body) }),
+  delete: (path, opts) => fetchWithAuth(path, { ...opts, method: "DELETE" }),
+};
+
+// Public fetch (no auth header — for /api/health probes etc.)
+export async function fetchPublic(path, options = {}) {
+  const url = path.startsWith("http") ? path : `${BASE_URL}${path}`;
+  const resp = await fetch(url, options);
+  if (!resp.ok) throw await asError(resp);
+  return resp.json();
+}

@@ -1,0 +1,85 @@
+import React, { useState } from "react";
+import { useAuth } from "../shared/contexts/AuthContext";
+import LoadingButton from "../shared/components/LoadingButton";
+
+export default function Signup() {
+  const { signup, verify } = useAuth();
+  const [step, setStep] = useState("signup");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [error, setError] = useState(null);
+
+  const onSignup = async (e) => {
+    e?.preventDefault();
+    setError(null);
+    try {
+      await signup({ email, password });
+      setStep("verify");
+    } catch (err) {
+      setError(err.message || "Signup failed");
+    }
+  };
+
+  const onVerify = async (e) => {
+    e?.preventDefault();
+    setError(null);
+    try {
+      await verify({ email, code });
+      window.location.assign("/dashboard");
+    } catch (err) {
+      setError(err.message || "Verification failed");
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="w-full max-w-sm space-y-4">
+        <div className="text-center mb-6">
+          <h1 className="text-2xl font-semibold">{{APP_NAME}}</h1>
+          <p className="text-gray-500 text-sm">
+            {step === "signup" ? "Create an account" : "Check your email for a code"}
+          </p>
+        </div>
+
+        {error && (
+          <div className="text-sm text-red-600 bg-red-50 dark:bg-red-950/40 px-3 py-2 rounded">
+            {error}
+          </div>
+        )}
+
+        {step === "signup" ? (
+          <form onSubmit={onSignup} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Email</label>
+              <input type="email" required value={email} onChange={e => setEmail(e.target.value)}
+                     className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Password</label>
+              <input type="password" required minLength={8} value={password} onChange={e => setPassword(e.target.value)}
+                     className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900" />
+              <p className="text-xs text-gray-500 mt-1">8 characters or more.</p>
+            </div>
+            <LoadingButton type="submit" onClick={onSignup} className="w-full">Create account</LoadingButton>
+            <div className="text-center text-sm text-gray-500">
+              Already have an account?{" "}
+              <a href="/login" className="text-primary hover:underline">Sign in</a>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={onVerify} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Verification code</label>
+              <input type="text" required value={code} onChange={e => setCode(e.target.value)}
+                     pattern="[0-9]{6}" maxLength={6}
+                     className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-2xl tracking-widest text-center" />
+              <p className="text-xs text-gray-500 mt-1">We sent a 6-digit code to {email}.</p>
+            </div>
+            <LoadingButton type="submit" onClick={onVerify} className="w-full">Verify</LoadingButton>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}

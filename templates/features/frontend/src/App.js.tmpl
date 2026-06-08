@@ -1,0 +1,54 @@
+import React, { useEffect, useState } from "react";
+import { AuthProvider } from "./shared/contexts/AuthContext";
+import { ThemeProvider } from "./shared/contexts/ThemeContext";
+import ErrorBoundary from "./shared/components/ErrorBoundary";
+import RequireAuth from "./shared/components/RequireAuth";
+import Layout from "./shared/components/Layout";
+import Login from "./pages/Login";
+import Signup from "./pages/Signup";
+import Dashboard from "./pages/Dashboard";
+// Conditional imports (Jarvis injects these per feature flags):
+// import Chat from "./pages/Chat";
+// import Billing from "./pages/Billing";
+
+/**
+ * Minimal router via window.location.pathname — pattern from CloudMortgage
+ * Lender UI. No react-router-dom dependency. Replace with react-router-dom
+ * if you need nested layouts or programmatic navigation.
+ */
+function Router() {
+  const [path, setPath] = useState(window.location.pathname);
+
+  useEffect(() => {
+    const handler = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, []);
+
+  // Public routes
+  if (path === "/login") return <Login />;
+  if (path === "/signup") return <Signup />;
+
+  // Authenticated routes
+  return (
+    <RequireAuth>
+      <Layout>
+        {path === "/" || path === "/dashboard" ? <Dashboard /> : null}
+        {/* {path === "/chat" ? <Chat /> : null} */}
+        {/* {path === "/billing" ? <Billing /> : null} */}
+      </Layout>
+    </RequireAuth>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <ThemeProvider>
+        <AuthProvider>
+          <Router />
+        </AuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
+  );
+}

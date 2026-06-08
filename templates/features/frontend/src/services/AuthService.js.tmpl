@@ -1,0 +1,49 @@
+import { api, fetchPublic } from "../shared/api/client";
+
+export function signup({ email, password, tenantId }) {
+  return fetchPublic("/api/auth/signup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, tenant_id: tenantId }),
+  });
+}
+
+export function verify({ email, code, tenantId }) {
+  return fetchPublic("/api/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, code, tenant_id: tenantId }),
+  });
+}
+
+export function login({ email, password, tenantId }) {
+  return fetchPublic("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, tenant_id: tenantId }),
+  });
+}
+
+export function logout() {
+  return api.post("/api/auth/logout", {});
+}
+
+export function me() {
+  return api.get("/api/auth/me");
+}
+
+export function forgotPassword({ email, tenantId }) {
+  return fetchPublic("/api/auth/forgot-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, tenant_id: tenantId }),
+  });
+}
+
+export function resetPassword({ code, newPassword, tenantId }) {
+  return fetchPublic("/api/auth/reset-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, new_password: newPassword, tenant_id: tenantId }),
+  });
+}

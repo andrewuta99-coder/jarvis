@@ -1,0 +1,95 @@
+/**
+ * OWASP-aligned JWT storage. Pattern from CloudMortgage Lender UI.
+ *
+ * - sessionStorage by default — cleared when the tab closes.
+ * - localStorage only when user explicitly chose "Remember me" (rememberMe=true).
+ * - Active expiry check every 5 minutes; clears expired tokens proactively.
+ * - Cleanup on window unload.
+ *
+ * Why not httpOnly cookies?
+ *   For an SPA on Amplify Hosting with backend on a different subdomain,
+ *   cookies require CORS + SameSite=None + Secure, which is more brittle
+ *   than session-scoped Bearer tokens. If you later move to same-origin,
+ *   migrating to cookies is straightforward.
+ */
+
+const ACCESS_KEY = "{{APP_NAME}}.access";
+const REFRESH_KEY = "{{APP_NAME}}.refresh";
+const ROLE_KEY = "{{APP_NAME}}.role";
+const REMEMBER_KEY = "{{APP_NAME}}.rememberMe";
+const EXPIRY_KEY = "{{APP_NAME}}.exp";
+
+function pickStorage() {
+  return localStorage.getItem(REMEMBER_KEY) === "1" ? localStorage : sessionStorage;
+}
+
+function decodeExp(token) {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1] || ""));
+    return payload.exp ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setTokens({ access, refresh, role, rememberMe = false }) {
+  if (rememberMe) {
+    localStorage.setItem(REMEMBER_KEY, "1");
+  } else {
+    localStorage.removeItem(REMEMBER_KEY);
+  }
+  const store = pickStorage();
+  if (access) {
+    store.setItem(ACCESS_KEY, access);
+    const exp = decodeExp(access);
+    if (exp) store.setItem(EXPIRY_KEY, String(exp));
+  }
+  if (refresh) store.setItem(REFRESH_KEY, refresh);
+  if (role) store.setItem(ROLE_KEY, role);
+}
+
+export function getAccessToken() {
+  return pickStorage().getItem(ACCESS_KEY);
+}
+
+export function getRefreshToken() {
+  return pickStorage().getItem(REFRESH_KEY);
+}
+
+export function getRole() {
+  return pickStorage().getItem(ROLE_KEY);
+}
+
+export function isExpired() {
+  const exp = parseInt(pickStorage().getItem(EXPIRY_KEY) || "0", 10);
+  return !exp || Date.now() > exp;
+}
+
+export function clearTokens() {
+  for (const store of [sessionStorage, localStorage]) {
+    store.removeItem(ACCESS_KEY);
+    store.removeItem(REFRESH_KEY);
+    store.removeItem(ROLE_KEY);
+    store.removeItem(EXPIRY_KEY);
+  }
+  localStorage.removeItem(REMEMBER_KEY);
+}
+
+// Active expiry monitor — clears expired tokens every 5 minutes
+let _interval = null;
+export function startExpiryMonitor() {
+  if (_interval) return;
+  _interval = setInterval(() => {
+    if (getAccessToken() && isExpired()) {
+      clearTokens();
+      window.dispatchEvent(new CustomEvent("auth:expired"));
+    }
+  }, 5 * 60 * 1000);
+}
+
+if (typeof window !== "undefined") {
+  startExpiryMonitor();
+  window.addEventListener("beforeunload", () => {
+    // Tokens in sessionStorage clear automatically; localStorage persists.
+  });
+}

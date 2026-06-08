@@ -1,0 +1,38 @@
+import React from "react";
+
+export default class ErrorBoundary extends React.Component {
+  state = { error: null };
+
+  static getDerivedStateFromError(error) { return { error }; }
+
+  componentDidCatch(error, info) {
+    // In production, ship to your monitoring (Sentry, CloudWatch, etc.)
+    // For v0 we just log to console.
+    console.error("ErrorBoundary caught:", error, info);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <div className="max-w-md text-center">
+          <h1 className="text-2xl font-bold mb-2">Something went wrong.</h1>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">
+            We logged the error. Try reloading the page.
+          </p>
+          {process.env.NODE_ENV !== "production" && (
+            <pre className="text-left text-xs bg-gray-100 dark:bg-gray-900 p-3 rounded overflow-auto max-h-64">
+              {this.state.error.stack || String(this.state.error)}
+            </pre>
+          )}
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-4 px-4 py-2 bg-primary text-white rounded font-medium hover:opacity-90"
+          >
+            Reload
+          </button>
+        </div>
+      </div>
+    );
+  }
+}

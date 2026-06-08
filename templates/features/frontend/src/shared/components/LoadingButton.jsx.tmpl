@@ -1,0 +1,46 @@
+import React from "react";
+
+/**
+ * Prevents double-submit on async actions. Pattern from CloudMortgage UI.
+ * Always disable + show spinner while onClick (returning a Promise) resolves.
+ */
+export default function LoadingButton({
+  children,
+  onClick,
+  className = "",
+  disabled = false,
+  type = "button",
+  ...rest
+}) {
+  const [loading, setLoading] = React.useState(false);
+
+  const handle = async (e) => {
+    if (loading || disabled) return;
+    setLoading(true);
+    try {
+      await onClick?.(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <button
+      type={type}
+      onClick={handle}
+      disabled={loading || disabled}
+      className={`inline-flex items-center justify-center gap-2 px-4 py-2 rounded font-medium
+                  bg-primary text-white hover:opacity-90 disabled:opacity-50
+                  disabled:cursor-not-allowed transition ${className}`}
+      {...rest}
+    >
+      {loading && (
+        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="4" />
+          <path d="M22 12a10 10 0 01-10 10" stroke="currentColor" strokeWidth="4" />
+        </svg>
+      )}
+      <span>{children}</span>
+    </button>
+  );
+}

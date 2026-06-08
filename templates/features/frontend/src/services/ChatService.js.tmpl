@@ -1,0 +1,61 @@
+import { api, BASE_URL } from "../shared/api/client";
+import { getAccessToken } from "../shared/utils/secureTokenStorage";
+
+/**
+ * Non-streaming chat. Simplest path. Use when latency is acceptable
+ * (Bedrock typically returns the full message in 1-3s for Nova Lite).
+ */
+export function chat({ message, threadId }) {
+  return api.post("/api/chat", { message, thread_id: threadId });
+}
+
+/**
+ * Streaming chat via Server-Sent Events. Pattern lifted from CloudMortgage
+ * AgentAssistant. Yields chunks as they arrive. Use for thinking-step UX.
+ *
+ * Backend must support text/event-stream — the default Bedrock path doesn't,
+ * but the rag-langchain / rag-langgraph features in v0.0.3 will.
+ */
+export async function* streamChat({ message, threadId }) {
+  const token = getAccessToken();
+  const resp = await fetch(`${BASE_URL}/api/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+    },
+    body: JSON.stringify({ message, thread_id: threadId }),
+  });
+  if (!resp.ok) throw new Error(`stream failed: ${resp.status}`);
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const event of events) {
+      const lines = event.split("\n");
+      const dataLine = lines.find(l => l.startsWith("data: "));
+      if (!dataLine) continue;
+      try {
+        yield JSON.parse(dataLine.slice(6));
+      } catch {
+        // ignore malformed events
+      }
+    }
+  }
+}
+
+export function listThreads() {
+  return api.get("/api/chat/threads");
+}
+
+export function getThread(threadId) {
+  return api.get(`/api/chat/threads/${threadId}`);
+}

@@ -1,0 +1,49 @@
+/**
+ * Lightweight RBAC. Pattern from CloudMortgage Lender UI.
+ *
+ * Roles are strings stored alongside the JWT. Components call
+ * enforceRoleAccess(allowedRoles) on mount; throws (or redirects)
+ * when the current user's role isn't allowed.
+ *
+ * Real authorization MUST be on the server too — this is UX, not security.
+ */
+import { getRole, clearTokens } from "./secureTokenStorage";
+
+const ROLE_HIERARCHY = {
+  // Higher number = more permissions
+  admin: 100,
+  owner: 90,
+  member: 50,
+  viewer: 10,
+};
+
+export function hasRole(role) {
+  return getRole() === role;
+}
+
+export function hasMinimumRole(minimum) {
+  const current = getRole();
+  const currentLevel = ROLE_HIERARCHY[current] ?? 0;
+  const minimumLevel = ROLE_HIERARCHY[minimum] ?? 0;
+  return currentLevel >= minimumLevel;
+}
+
+export function enforceRoleAccess(allowedRoles) {
+  const role = getRole();
+  if (!role) {
+    redirectToLogin();
+    return false;
+  }
+  if (!allowedRoles.includes(role)) {
+    window.location.assign("/dashboard?denied=1");
+    return false;
+  }
+  return true;
+}
+
+export function redirectToLogin() {
+  clearTokens();
+  if (window.location.pathname !== "/login") {
+    window.location.assign("/login");
+  }
+}

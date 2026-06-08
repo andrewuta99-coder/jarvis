@@ -1,0 +1,65 @@
+feature: frontend
+version: 0.0.1
+specialist: jarvis-frontend
+description: |
+  Create React App + React 18 + Tailwind + lucide-react. Lifted from the
+  CloudMortgage Lender UI patterns: secureTokenStorage (sessionStorage
+  default), fetchWithAuth client with auto-refresh on 401, ThemeContext
+  with dark-mode, ErrorBoundary, streaming AgentAssistant chat with
+  thinking-step animation.
+
+  IMPORTANT: this feature writes ONLY to frontend/. Zero overlap with
+  backend/. Frontend and backend are independent — they can live in one
+  repo (monorepo) or two repos (split-repo). The jarvis-init skill asks.
+
+inputs:
+  required: [region, app_name, backend_url, features]   # features list drives which pages render
+outputs: [frontend_build_dir, amplify_build_spec]
+
+writes_glob: [frontend/**/*]   # exclusive — backend never writes here
+
+files:
+  always:
+    - { src: package.json.tmpl,                    dst: frontend/package.json }
+    - { src: tailwind.config.js.tmpl,              dst: frontend/tailwind.config.js }
+    - { src: postcss.config.js.tmpl,               dst: frontend/postcss.config.js }
+    - { src: .env.example.tmpl,                    dst: frontend/.env.example }
+    - { src: .gitignore.tmpl,                      dst: frontend/.gitignore }
+    - { src: public/index.html.tmpl,               dst: frontend/public/index.html }
+    - { src: amplify.yml.tmpl,                     dst: frontend/amplify.yml }
+    - { src: src/index.js.tmpl,                    dst: frontend/src/index.js }
+    - { src: src/index.css.tmpl,                   dst: frontend/src/index.css }
+    - { src: src/App.js.tmpl,                      dst: frontend/src/App.js }
+    - { src: src/shared/api/client.js.tmpl,        dst: frontend/src/shared/api/client.js }
+    - { src: src/shared/utils/secureTokenStorage.js.tmpl, dst: frontend/src/shared/utils/secureTokenStorage.js }
+    - { src: src/shared/utils/roleManager.js.tmpl, dst: frontend/src/shared/utils/roleManager.js }
+    - { src: src/shared/contexts/AuthContext.jsx.tmpl,    dst: frontend/src/shared/contexts/AuthContext.jsx }
+    - { src: src/shared/contexts/ThemeContext.jsx.tmpl,   dst: frontend/src/shared/contexts/ThemeContext.jsx }
+    - { src: src/shared/components/ErrorBoundary.jsx.tmpl, dst: frontend/src/shared/components/ErrorBoundary.jsx }
+    - { src: src/shared/components/LoadingButton.jsx.tmpl, dst: frontend/src/shared/components/LoadingButton.jsx }
+    - { src: src/shared/components/RequireAuth.jsx.tmpl, dst: frontend/src/shared/components/RequireAuth.jsx }
+    - { src: src/shared/components/Layout.jsx.tmpl, dst: frontend/src/shared/components/Layout.jsx }
+    - { src: src/services/AuthService.js.tmpl,     dst: frontend/src/services/AuthService.js }
+    - { src: src/pages/Login.jsx.tmpl,             dst: frontend/src/pages/Login.jsx }
+    - { src: src/pages/Signup.jsx.tmpl,            dst: frontend/src/pages/Signup.jsx }
+    - { src: src/pages/Dashboard.jsx.tmpl,         dst: frontend/src/pages/Dashboard.jsx }
+  conditional:
+    - if_feature: ai
+      src: src/services/ChatService.js.tmpl
+      dst: frontend/src/services/ChatService.js
+    - if_feature: ai
+      src: src/pages/Chat.jsx.tmpl
+      dst: frontend/src/pages/Chat.jsx
+    - if_feature: payments
+      src: src/pages/Billing.jsx.tmpl
+      dst: frontend/src/pages/Billing.jsx
+
+ux_patterns_baked_in:
+  - sessionStorage-first JWT (OWASP); localStorage opt-in via rememberMe
+  - Auto refresh-token rotation on 401; logout on refresh fail
+  - Tailwind dark-mode via .dark class on <html>, ThemeContext toggle
+  - ErrorBoundary wraps app root, shows fallback UI
+  - LoadingButton prevents double-submit
+  - Streaming chat with thinking-step animation (when ai feature present)
+  - Service-per-domain pattern (no Redux/Zustand at v0)
+  - Multi-tenant X-Org-Id header support, off-by-default
