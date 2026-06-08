@@ -68,12 +68,21 @@ esac
 log "    Target:  $SKILLS_ROOT"
 mkdir -p "$SKILLS_ROOT"
 
-# Symlink the jarvis directory itself
-if [ -L "$SKILLS_ROOT/jarvis" ] || [ -e "$SKILLS_ROOT/jarvis" ]; then
-  rm -rf "$SKILLS_ROOT/jarvis"
+# If JARVIS_DIR is ALREADY at the install target (e.g. user cloned via
+# install.sh into ~/.claude/skills/jarvis), do NOT try to symlink the dir
+# to itself — that would `rm -rf` the cloned content and create a self-loop.
+# The directory IS the install; nothing to symlink.
+JARVIS_DIR_REAL="$(cd "$JARVIS_DIR" && pwd -P)"
+TARGET_REAL="$(cd "$SKILLS_ROOT" 2>/dev/null && pwd -P)/jarvis"
+if [ "$JARVIS_DIR_REAL" = "$TARGET_REAL" ]; then
+  log "    Note: source IS the install target — skipping top-level symlink."
+else
+  if [ -L "$SKILLS_ROOT/jarvis" ] || [ -e "$SKILLS_ROOT/jarvis" ]; then
+    rm -rf "$SKILLS_ROOT/jarvis"
+  fi
+  ln -snf "$JARVIS_DIR" "$SKILLS_ROOT/jarvis"
+  log "    OK: linked $SKILLS_ROOT/jarvis -> $JARVIS_DIR"
 fi
-ln -snf "$JARVIS_DIR" "$SKILLS_ROOT/jarvis"
-log "    OK: linked $SKILLS_ROOT/jarvis -> $JARVIS_DIR"
 
 # Symlink each top-level skill directory as its own entry
 # (so /jarvis-init, /jarvis-add-users, etc. surface in Claude Code's skill list)
