@@ -1,0 +1,69 @@
+"""
+LangChain RAG service — same interface as ai.service.chat(), different
+implementation. Bedrock LLM via langchain-aws, Bedrock KB retriever, LCEL.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import time
+import uuid
+
+from core import dynamodb as ddb
+
+from .chains import build_rag_chain
+from .tracing import maybe_enable_langsmith
+
+logger = logging.getLogger(__name__)
+
+maybe_enable_langsmith()
+_chain = build_rag_chain()
+
+
+async def chat(*, tenant: str, user_id: str, message: str, thread_id: str | None) -> dict:
+    thread_id = thread_id or str(uuid.uuid4())
+    started = time.perf_counter()
+
+    result = await _chain.ainvoke({
+        "question": message,
+        "session_id": f"{tenant}:{thread_id}",
+    })
+
+    duration_ms = (time.perf_counter() - started) * 1000
+    response_text = result.get("answer", "")
+    citations = result.get("citations", [])
+
+    logger.info("chat_invoke", extra={
+        "thread_id": thread_id, "duration_ms": round(duration_ms, 1),
+        "citations": len(citations),
+    })
+
+    # Persist (same shape as the default ai.service so the rest of the app
+    # doesn't care which backend is in use).
+    now = int(time.time())
+    ddb.chat_threads_table().update_item(
+        Key={"userId": user_id, "thread_id": thread_id},
+        UpdateExpression="SET updated_at = :t, tenantId = if_not_exists(tenantId, :tn)",
+        ExpressionAttributeValues={":t": now, ":tn": tenant},
+    )
+    ddb.chat_messages_table().put_item(Item={
+        "thread_id": thread_id, "created_at": now * 1000,
+        "role": "user", "content": message,
+    })
+    ddb.chat_messages_table().put_item(Item={
+        "thread_id": thread_id, "created_at": now * 1000 + 1,
+        "role": "assistant", "content": response_text,
+        "citations": citations, "provider": "langchain",
+    })
+
+    return {
+        "response": response_text,
+        "thread_id": thread_id,
+        "citations": citations,
+        "model": os.environ.get("DEFAULT_MODEL", "amazon.nova-lite-v1:0"),
+    }
+
+
+async def kb_query(*, tenant: str, query: str, top_k: int = 5):
+    from .retrievers import direct_kb_query
+    return await direct_kb_query(query=query, top_k=top_k)

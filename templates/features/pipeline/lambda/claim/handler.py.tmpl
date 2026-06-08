@@ -1,0 +1,150 @@
+"""
+Pipeline ClaimInbox handler.
+
+Atomically claims the next queued proposal from the S3 inbox AND checks
+that the submitter has an allowed subscription tier. Non-allowed proposals
+are moved to rejected/ with a rejection.json; allowed ones move to claimed/.
+
+Pattern from CloudMortgage alpamayo_claim.
+
+Input:  {} (empty, no payload required)
+Output: { run_id, proposal_id, claimed_key, bucket, created_by }
+        or { empty: true } when there's nothing to claim.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import logging
+import os
+import uuid
+
+import boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+BUCKET         = os.environ["ARTIFACTS_BUCKET"]
+INBOX_PREFIX   = os.environ.get("INBOX_PREFIX", "pipeline-inbox/")
+CLAIMED_PREFIX = f"{INBOX_PREFIX}claimed/"
+REJECTED_PREFIX = f"{INBOX_PREFIX}rejected/"
+SUBS_TABLE     = os.environ.get("SUBSCRIPTIONS_TABLE", "")
+ALLOWED_TIERS  = {t.strip().lower() for t in os.environ.get("ALLOWED_TIERS", "ultra,enterprise").split(",") if t.strip()}
+
+SKIP_PREFIXES = (
+    CLAIMED_PREFIX,
+    f"{INBOX_PREFIX}done/",
+    f"{INBOX_PREFIX}failed/",
+    REJECTED_PREFIX,
+)
+
+s3 = boto3.client("s3")
+ddb = boto3.resource("dynamodb")
+
+
+def lambda_handler(event, _context):
+    logger.info("claim_invoked")
+
+    # STOP kill switch
+    if _head(BUCKET, f"{INBOX_PREFIX}STOP"):
+        logger.warning("stop_flag_present")
+        return {"empty": True, "reason": "stop_flag"}
+
+    for key in _list_queued():
+        run_id = _new_run_id()
+        filename = key.rsplit("/", 1)[-1]
+        claimed_key = f"{CLAIMED_PREFIX}{run_id}/{filename}"
+
+        # Atomic claim via copy-then-delete (S3 doesn't have a true move)
+        try:
+            s3.copy_object(Bucket=BUCKET, Key=claimed_key,
+                           CopySource={"Bucket": BUCKET, "Key": key})
+            s3.delete_object(Bucket=BUCKET, Key=key)
+        except Exception as exc:
+            logger.warning("claim_race_lost", extra={"key": key, "error": str(exc)})
+            continue
+
+        # Tier gate
+        created_by = _extract_created_by(claimed_key)
+        if SUBS_TABLE and not _tier_allowed(created_by):
+            logger.info("tier_rejected", extra={"user": created_by})
+            _move_to_rejected(claimed_key, run_id, reason="tier_not_allowed", user=created_by)
+            continue   # try the next file
+
+        proposal_id = filename.rsplit(".", 1)[0]
+        return {
+            "run_id": run_id,
+            "proposal_id": proposal_id,
+            "claimed_key": claimed_key,
+            "source_key": key,
+            "bucket": BUCKET,
+            "created_by": created_by,
+        }
+
+    return {"empty": True}
+
+
+def _new_run_id() -> str:
+    return "run-" + dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+
+
+def _head(bucket: str, key: str) -> bool:
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def _list_queued():
+    """Yield keys directly under INBOX_PREFIX, excluding subdirs/STOP."""
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=INBOX_PREFIX, Delimiter="/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/") or key.endswith("STOP"):
+                continue
+            if any(key.startswith(p) for p in SKIP_PREFIXES):
+                continue
+            yield key
+
+
+def _extract_created_by(claimed_key: str) -> str:
+    """Read the claimed YAML to find created_by. We don't parse YAML in the
+    Lambda (no deps); just look for `created_by:` line in the head."""
+    obj = s3.get_object(Bucket=BUCKET, Key=claimed_key)
+    body = obj["Body"].read(8192).decode("utf-8", errors="ignore")
+    for line in body.splitlines():
+        if line.startswith("created_by:"):
+            return line.split(":", 1)[1].strip().strip("'\"")
+    return ""
+
+
+def _tier_allowed(user_email: str) -> bool:
+    if not user_email:
+        return False
+    try:
+        item = ddb.Table(SUBS_TABLE).get_item(Key={"userId": user_email}).get("Item")
+        if not item:
+            return False
+        return (item.get("tier") or "").lower() in ALLOWED_TIERS
+    except Exception as exc:
+        logger.error("tier_check_failed", extra={"error": str(exc)})
+        return False
+
+
+def _move_to_rejected(claimed_key: str, run_id: str, *, reason: str, user: str):
+    filename = claimed_key.rsplit("/", 1)[-1]
+    rejected_key = f"{REJECTED_PREFIX}{run_id}/{filename}"
+    s3.copy_object(Bucket=BUCKET, Key=rejected_key,
+                   CopySource={"Bucket": BUCKET, "Key": claimed_key})
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=f"{REJECTED_PREFIX}{run_id}/rejection.json",
+        Body=json.dumps({
+            "reason": reason,
+            "user": user,
+            "rejected_at": dt.datetime.utcnow().isoformat() + "Z",
+        }).encode(),
+    )
+    s3.delete_object(Bucket=BUCKET, Key=claimed_key)

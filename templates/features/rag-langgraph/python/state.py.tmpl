@@ -1,0 +1,32 @@
+"""Pydantic state model for the LangGraph state machine.
+
+Each node reads + writes a subset of this state. LangGraph merges updates
+by node-declared output schema. State persistence is via the DDB
+checkpointer keyed by thread_id.
+"""
+from __future__ import annotations
+
+from typing import Any
+from pydantic import BaseModel, Field
+
+
+class ChatState(BaseModel):
+    # Inputs
+    question: str = ""
+    tenant_id: str = ""
+    user_id: str = ""
+    thread_id: str = ""
+
+    # Retrieval phase
+    retrieved_docs: list[dict] = Field(default_factory=list)
+    needs_clarification: bool = False
+    clarification_question: str | None = None
+
+    # Generation phase
+    answer: str = ""
+    citations: list[dict] = Field(default_factory=list)
+    confidence: float = 0.0   # 0..1, optional self-rated by the LLM
+
+    # Audit
+    nodes_visited: list[str] = Field(default_factory=list)
+    error: str | None = None

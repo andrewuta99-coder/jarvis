@@ -1,0 +1,68 @@
+"""
+DynamoDB-backed LangGraph checkpointer.
+
+Re-uses the chat_threads table from the AI feature. One graph state per
+thread_id. Inspired by the LangGraph DDB saver in the langgraph-checkpoint
+ecosystem; the heavy version supports time-travel via the chat_messages
+table's range key as a step counter — v0.0.3 keeps this simple with the
+latest-snapshot pattern.
+"""
+from __future__ import annotations
+
+import json
+import os
+import time
+from functools import lru_cache
+from typing import Any
+
+import boto3
+from langgraph.checkpoint.base import BaseCheckpointSaver, Checkpoint, CheckpointMetadata
+
+REGION = os.environ.get("AWS_REGION", "{{REGION}}")
+TABLE  = os.environ.get("CHAT_THREADS_TABLE", "{{APP_NAME}}-chat-threads")
+
+
+class DDBCheckpointer(BaseCheckpointSaver):
+    """Latest-snapshot checkpointer — one record per thread_id."""
+
+    def __init__(self):
+        super().__init__()
+        self._table = boto3.resource("dynamodb", region_name=REGION).Table(TABLE)
+
+    def get_tuple(self, config: dict):
+        thread_id = config["configurable"]["thread_id"]
+        user_id = config["configurable"].get("user_id", "anon")
+        resp = self._table.get_item(Key={"userId": user_id, "thread_id": thread_id})
+        item = resp.get("Item")
+        if not item or "graph_state" not in item:
+            return None
+        return (
+            Checkpoint.from_dict(json.loads(item["graph_state"])),
+            CheckpointMetadata(),
+            None,
+        )
+
+    def put(self, config: dict, checkpoint: Checkpoint, metadata: CheckpointMetadata, _new_versions):
+        thread_id = config["configurable"]["thread_id"]
+        user_id = config["configurable"].get("user_id", "anon")
+        self._table.update_item(
+            Key={"userId": user_id, "thread_id": thread_id},
+            UpdateExpression="SET graph_state = :s, updated_at = :t",
+            ExpressionAttributeValues={
+                ":s": json.dumps(checkpoint.to_dict(), default=str),
+                ":t": int(time.time()),
+            },
+        )
+        return config
+
+    def list(self, config, *, limit=None, before=None):
+        # Latest-snapshot only — no list semantics. Use the chat_messages
+        # table for full history if needed.
+        result = self.get_tuple(config)
+        if result:
+            yield result
+
+
+@lru_cache(maxsize=1)
+def ddb_checkpointer():
+    return DDBCheckpointer()

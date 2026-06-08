@@ -1,0 +1,116 @@
+"""
+LangGraph state machine.
+
+Flow:
+    classify -> retrieve -> [enough_context?] --yes--> generate -> END
+                                         \--no--> clarify -> END
+
+Each node logs to nodes_visited. The DDB checkpointer persists state per
+thread_id so a chat resumes from where it left off across restarts.
+"""
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+
+from langchain_aws import ChatBedrockConverse
+from langgraph.graph import StateGraph, END
+
+from .checkpointer import ddb_checkpointer
+from .state import ChatState
+
+REGION = os.environ.get("AWS_REGION", "{{REGION}}")
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "amazon.nova-lite-v1:0")
+KB_ID = os.environ["BEDROCK_KB_ID"]
+
+
+@lru_cache(maxsize=1)
+def _llm():
+    return ChatBedrockConverse(model=DEFAULT_MODEL, region_name=REGION)
+
+
+# ─── Nodes ────────────────────────────────────────────────────────────────
+def classify(state: ChatState) -> dict:
+    """Decide whether the question needs retrieval, or is a small-talk turn."""
+    state.nodes_visited.append("classify")
+    # Cheap heuristic — for v0 we always retrieve. Replace with a small LLM
+    # classifier for cost control if needed.
+    return {"nodes_visited": state.nodes_visited}
+
+
+def retrieve(state: ChatState) -> dict:
+    state.nodes_visited.append("retrieve")
+    import boto3
+    client = boto3.client("bedrock-agent-runtime", region_name=REGION)
+    resp = client.retrieve(
+        knowledgeBaseId=KB_ID,
+        retrievalQuery={"text": state.question},
+        retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": 5}},
+    )
+    docs = [
+        {
+            "content": r.get("content", {}).get("text", ""),
+            "source": r.get("location", {}).get("s3Location", {}).get("uri", ""),
+            "score": r.get("score", 0),
+        }
+        for r in resp.get("retrievalResults", [])
+    ]
+    needs_clarif = not docs or all(d["score"] < 0.4 for d in docs)
+    return {
+        "retrieved_docs": docs,
+        "needs_clarification": needs_clarif,
+        "nodes_visited": state.nodes_visited,
+    }
+
+
+def should_clarify(state: ChatState) -> str:
+    return "clarify" if state.needs_clarification else "generate"
+
+
+def clarify(state: ChatState) -> dict:
+    state.nodes_visited.append("clarify")
+    msg = (
+        "I couldn't find strong matches in the knowledge base for your question. "
+        "Could you rephrase or provide more detail about what you're looking for?"
+    )
+    return {
+        "answer": msg,
+        "clarification_question": msg,
+        "nodes_visited": state.nodes_visited,
+    }
+
+
+def generate(state: ChatState) -> dict:
+    state.nodes_visited.append("generate")
+    context = "\n\n".join(f"[{i+1}] {d['content']}" for i, d in enumerate(state.retrieved_docs))
+    messages = [
+        ("system", f"Answer using only the context. Cite source numbers like [1].\n\nContext:\n{context}"),
+        ("user", state.question),
+    ]
+    resp = _llm().invoke(messages)
+    return {
+        "answer": resp.content if hasattr(resp, "content") else str(resp),
+        "citations": [{"source": d["source"], "content": d["content"][:200]} for d in state.retrieved_docs],
+        "nodes_visited": state.nodes_visited,
+    }
+
+
+# ─── Graph ────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=1)
+def build_graph():
+    builder = StateGraph(ChatState)
+    builder.add_node("classify", classify)
+    builder.add_node("retrieve", retrieve)
+    builder.add_node("clarify", clarify)
+    builder.add_node("generate", generate)
+
+    builder.set_entry_point("classify")
+    builder.add_edge("classify", "retrieve")
+    builder.add_conditional_edges("retrieve", should_clarify, {
+        "clarify": "clarify",
+        "generate": "generate",
+    })
+    builder.add_edge("generate", END)
+    builder.add_edge("clarify", END)
+
+    return builder.compile(checkpointer=ddb_checkpointer())

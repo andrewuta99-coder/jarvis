@@ -1,0 +1,88 @@
+"""
+Pipeline FailureHandler — Step Functions Catch target.
+
+Moves the claim from claimed/<run_id>/ to failed/<run_id>/, writes a
+failure.json with the diagnostic context, notifies the submitter.
+
+Pattern from CloudMortgage alpamayo_failure.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import logging
+import os
+
+import boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+BUCKET         = os.environ["ARTIFACTS_BUCKET"]
+INBOX_PREFIX   = os.environ.get("INBOX_PREFIX", "pipeline-inbox/")
+CLAIMED_PREFIX = f"{INBOX_PREFIX}claimed/"
+FAILED_PREFIX  = f"{INBOX_PREFIX}failed/"
+SENDER         = os.environ.get("SENDER_EMAIL", "")
+
+s3  = boto3.client("s3")
+ses = boto3.client("sesv2")
+
+
+def lambda_handler(event, _context):
+    run_id = event.get("run_id") or "unknown"
+    user   = event.get("created_by") or ""
+    error  = event.get("error") or {"Cause": "no error info"}
+
+    # Move claim to failed
+    src = f"{CLAIMED_PREFIX}{run_id}/"
+    dst = f"{FAILED_PREFIX}{run_id}/"
+    moved = 0
+    for obj in _list(src):
+        key = obj["Key"]
+        new_key = key.replace(src, dst, 1)
+        s3.copy_object(Bucket=BUCKET, Key=new_key,
+                       CopySource={"Bucket": BUCKET, "Key": key})
+        s3.delete_object(Bucket=BUCKET, Key=key)
+        moved += 1
+
+    # Write failure.json
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=f"{dst}failure.json",
+        Body=json.dumps({
+            "run_id": run_id,
+            "user": user,
+            "failed_at": dt.datetime.utcnow().isoformat() + "Z",
+            "error": error,
+        }, default=str, indent=2).encode(),
+    )
+    logger.error("failure_recorded", extra={"run_id": run_id, "user": user, "files_moved": moved})
+
+    if user and SENDER:
+        try:
+            ses.send_email(
+                FromEmailAddress=SENDER,
+                Destination={"ToAddresses": [user]},
+                Content={"Simple": {
+                    "Subject": {"Data": f"Pipeline run {run_id} failed", "Charset": "UTF-8"},
+                    "Body": {"Text": {
+                        "Data": (
+                            f"Your pipeline run {run_id} failed.\n\n"
+                            f"Error: {json.dumps(error, indent=2)[:1500]}\n"
+                            f"Diagnostics: s3://{BUCKET}/{dst}\n"
+                        ),
+                        "Charset": "UTF-8",
+                    }},
+                }},
+            )
+        except Exception as exc:
+            logger.warning("notify_failed", extra={"error": str(exc)})
+
+    return {"run_id": run_id, "status": "failed"}
+
+
+def _list(prefix: str):
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            yield obj

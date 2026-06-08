@@ -1,0 +1,37 @@
+"""Bedrock Knowledge Base retriever via langchain-aws."""
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+
+from langchain_aws import AmazonKnowledgeBasesRetriever
+
+
+KB_ID = os.environ["BEDROCK_KB_ID"]
+TOP_K = int(os.environ.get("RAG_TOP_K", "5"))
+
+
+@lru_cache(maxsize=1)
+def bedrock_kb_retriever():
+    return AmazonKnowledgeBasesRetriever(
+        knowledge_base_id=KB_ID,
+        retrieval_config={
+            "vectorSearchConfiguration": {"numberOfResults": TOP_K},
+        },
+    )
+
+
+async def direct_kb_query(*, query: str, top_k: int = 5):
+    """For inspection — returns raw retrieval results without the LLM step."""
+    retriever = bedrock_kb_retriever()
+    docs = await retriever.ainvoke(query)
+    return {
+        "results": [
+            {
+                "content": d.page_content,
+                "source": d.metadata.get("location", {}).get("s3Location", {}).get("uri", ""),
+                "score": d.metadata.get("score"),
+            }
+            for d in docs[:top_k]
+        ]
+    }

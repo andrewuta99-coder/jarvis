@@ -1,0 +1,9 @@
+"""LangChain RAG variant. Plug-in replacement for ai.service.chat().
+
+To swap the AI service to this variant:
+    # In main.py, replace:
+    #   from ai.service import chat
+    # With:
+    from ai_langchain.service import chat
+"""
+from .service import chat, kb_query  # noqa: F401

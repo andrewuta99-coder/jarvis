@@ -1,0 +1,78 @@
+"""
+RAG chain definition using LangChain LCEL.
+
+retriever -> context | question -> prompt | llm | output_parser
+
+Swap llm by changing DEFAULT_MODEL env var (Nova family + Claude family
+both supported — the multi-model IAM wildcard from the AI feature means
+no IAM change is needed).
+"""
+from __future__ import annotations
+
+import os
+
+from langchain_aws import ChatBedrockConverse
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+
+from .retrievers import bedrock_kb_retriever
+
+REGION = os.environ.get("AWS_REGION", "{{REGION}}")
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "amazon.nova-lite-v1:0")
+
+SYSTEM_PROMPT = """You are a helpful AI assistant. Answer the user's
+question based on the provided context. When you cite from context, be
+specific. When the context doesn't cover the question, say so — do not
+make things up.
+
+Context:
+{context}
+"""
+
+
+def _format_context(docs) -> str:
+    return "\n\n".join(
+        f"[{i+1}] {d.page_content}" for i, d in enumerate(docs)
+    )
+
+
+def _extract_citations(docs) -> list[dict]:
+    return [
+        {
+            "source": d.metadata.get("location", {}).get("s3Location", {}).get("uri", ""),
+            "content": d.page_content[:200],
+        }
+        for d in docs
+    ]
+
+
+def build_rag_chain():
+    """Returns a chain that takes {question} and yields {answer, citations}."""
+    retriever = bedrock_kb_retriever()
+    llm = ChatBedrockConverse(model=DEFAULT_MODEL, region_name=REGION)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("user", "{question}"),
+    ])
+
+    # LCEL: pass through question, retrieve docs in parallel, then prompt+llm
+    def with_context(inputs):
+        docs = retriever.invoke(inputs["question"])
+        return {
+            "question": inputs["question"],
+            "context": _format_context(docs),
+            "_docs": docs,
+        }
+
+    chain = (
+        RunnablePassthrough.assign(_intermediate=lambda x: with_context(x))
+        | (lambda x: {
+            "answer": (prompt | llm | StrOutputParser()).invoke({
+                "question": x["question"],
+                "context": x["_intermediate"]["context"],
+            }),
+            "citations": _extract_citations(x["_intermediate"]["_docs"]),
+        })
+    )
+    return chain

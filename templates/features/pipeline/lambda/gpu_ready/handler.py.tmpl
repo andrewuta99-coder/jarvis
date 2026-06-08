@@ -1,0 +1,59 @@
+"""
+Pipeline GPU-readiness gate.
+
+Checks that the GPU capacity provider has at least one container instance
+with GPU resources registered. If not, raises GpuNotReady so Step Functions
+retries with backoff (gives the ASG time to launch + register).
+
+Pattern from CloudMortgage alpamayo_gpu_ready.
+"""
+from __future__ import annotations
+
+import logging
+import os
+
+import boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+CLUSTER           = os.environ["ECS_CLUSTER"]
+CAPACITY_PROVIDER = os.environ["CAPACITY_PROVIDER"]
+
+ecs = boto3.client("ecs")
+
+
+class GpuNotReady(Exception):
+    """Raised when no instances with GPU resources are registered yet.
+    Step Functions Retry catches this and waits before re-invoking."""
+
+
+def lambda_handler(event, _context):
+    instance_arns = _list_instances()
+    if not instance_arns:
+        logger.info("no_instances_yet", extra={"cluster": CLUSTER, "provider": CAPACITY_PROVIDER})
+        raise GpuNotReady("ASG has no instances yet; will retry")
+
+    descs = ecs.describe_container_instances(
+        cluster=CLUSTER,
+        containerInstances=instance_arns,
+    )["containerInstances"]
+
+    has_gpu = any(
+        any(r.get("name") == "GPU" and r.get("stringSetValue") for r in i.get("registeredResources", []))
+        for i in descs
+    )
+    if not has_gpu:
+        logger.info("instances_up_but_no_gpu_yet")
+        raise GpuNotReady("Instances registered but GPU resources not yet visible; retry")
+
+    logger.info("gpu_ready", extra={"instance_count": len(descs)})
+    return {**event, "gpu_ready": True, "instance_count": len(descs)}
+
+
+def _list_instances() -> list[str]:
+    resp = ecs.list_container_instances(
+        cluster=CLUSTER,
+        filter=f"attribute:ecs.capability.capacity-provider-name == {CAPACITY_PROVIDER}",
+    )
+    return resp.get("containerInstanceArns", [])

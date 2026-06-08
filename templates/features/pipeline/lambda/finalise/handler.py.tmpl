@@ -1,0 +1,83 @@
+"""
+Pipeline finalise — runs after RunTask completes successfully.
+
+Moves the claim from claimed/<run_id>/ to done/<run_id>/, extracts headline
+metrics from any summary.json the task produced, sends completion email.
+
+Pattern from CloudMortgage alpamayo_finalise.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import logging
+import os
+
+import boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+BUCKET         = os.environ["ARTIFACTS_BUCKET"]
+INBOX_PREFIX   = os.environ.get("INBOX_PREFIX", "pipeline-inbox/")
+CLAIMED_PREFIX = f"{INBOX_PREFIX}claimed/"
+DONE_PREFIX    = f"{INBOX_PREFIX}done/"
+SENDER         = os.environ.get("SENDER_EMAIL", "")
+NOTIFY         = os.environ.get("NOTIFY_EMAIL", "")
+
+s3  = boto3.client("s3")
+ses = boto3.client("sesv2")
+
+
+def lambda_handler(event, _context):
+    run_id = event["run_id"]
+    user   = event.get("created_by") or ""
+
+    # Move claim to done
+    src_prefix = f"{CLAIMED_PREFIX}{run_id}/"
+    dst_prefix = f"{DONE_PREFIX}{run_id}/"
+    for obj in _list(src_prefix):
+        key = obj["Key"]
+        dst = key.replace(src_prefix, dst_prefix, 1)
+        s3.copy_object(Bucket=BUCKET, Key=dst,
+                       CopySource={"Bucket": BUCKET, "Key": key})
+        s3.delete_object(Bucket=BUCKET, Key=key)
+
+    # Pull headline metrics from summary.json if present
+    summary = {}
+    try:
+        body = s3.get_object(Bucket=BUCKET, Key=f"{dst_prefix}summary.json")["Body"].read()
+        summary = json.loads(body)
+    except Exception:
+        pass
+
+    logger.info("finalised", extra={"run_id": run_id, "user": user, "metrics": summary})
+
+    if user and SENDER:
+        try:
+            ses.send_email(
+                FromEmailAddress=SENDER,
+                Destination={"ToAddresses": [user]},
+                Content={"Simple": {
+                    "Subject": {"Data": f"Pipeline run {run_id} complete", "Charset": "UTF-8"},
+                    "Body": {"Text": {
+                        "Data": (
+                            f"Your pipeline run {run_id} completed.\n\n"
+                            f"Summary: {json.dumps(summary, indent=2)[:1000]}\n"
+                            f"Artifacts: s3://{BUCKET}/{dst_prefix}\n"
+                        ),
+                        "Charset": "UTF-8",
+                    }},
+                }},
+            )
+        except Exception as exc:
+            logger.warning("email_send_failed", extra={"error": str(exc)})
+
+    return {"run_id": run_id, "status": "done", "summary": summary}
+
+
+def _list(prefix: str):
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            yield obj

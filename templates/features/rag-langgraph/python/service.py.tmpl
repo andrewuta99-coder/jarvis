@@ -1,0 +1,65 @@
+"""LangGraph service — same interface as ai.service.chat()."""
+from __future__ import annotations
+
+import logging
+import os
+import time
+import uuid
+
+from core import dynamodb as ddb
+
+from .graph import build_graph
+from .state import ChatState
+
+logger = logging.getLogger(__name__)
+
+
+async def chat(*, tenant: str, user_id: str, message: str, thread_id: str | None) -> dict:
+    thread_id = thread_id or str(uuid.uuid4())
+    graph = build_graph()
+
+    initial = ChatState(
+        question=message,
+        tenant_id=tenant,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+    config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+
+    started = time.perf_counter()
+    final_state = await graph.ainvoke(initial, config=config)
+    duration_ms = (time.perf_counter() - started) * 1000
+
+    logger.info("graph_invoke", extra={
+        "thread_id": thread_id,
+        "nodes_visited": final_state.nodes_visited,
+        "duration_ms": round(duration_ms, 1),
+    })
+
+    # Persist message history (graph state already persisted by checkpointer)
+    now = int(time.time())
+    ddb.chat_messages_table().put_item(Item={
+        "thread_id": thread_id, "created_at": now * 1000,
+        "role": "user", "content": message,
+    })
+    ddb.chat_messages_table().put_item(Item={
+        "thread_id": thread_id, "created_at": now * 1000 + 1,
+        "role": "assistant", "content": final_state.answer,
+        "citations": final_state.citations,
+        "nodes_visited": final_state.nodes_visited,
+        "provider": "langgraph",
+    })
+
+    return {
+        "response": final_state.answer,
+        "thread_id": thread_id,
+        "citations": final_state.citations,
+        "model": os.environ.get("DEFAULT_MODEL", "amazon.nova-lite-v1:0"),
+        "nodes_visited": final_state.nodes_visited,
+    }
+
+
+async def kb_query(*, tenant: str, query: str, top_k: int = 5):
+    # Re-use the default ai feature's kb_query — same implementation.
+    from ai.service import kb_query as default_kb_query
+    return await default_kb_query(tenant=tenant, query=query, top_k=top_k)
