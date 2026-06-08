@@ -218,10 +218,20 @@ def main() -> int:
 
     context = json.loads(args.context.read_text())
     feature_flags = set(context.get("features", []))
-    feature_root = args.templates_root / args.feature
+
+    # v1.5: user-defined custom specialists in ~/.jarvis/specialists/<feature>
+    # take precedence over built-in features with the same name.
+    user_specialists = Path.home() / ".jarvis" / "specialists"
+    feature_root = user_specialists / args.feature
+    is_custom = feature_root.exists()
+    if not is_custom:
+        feature_root = args.templates_root / args.feature
     if not feature_root.exists():
-        print(f"Feature not found: {feature_root}", file=sys.stderr)
+        print(f"Feature not found in user specialists ({user_specialists}/{args.feature}) "
+              f"or built-ins ({args.templates_root}/{args.feature})", file=sys.stderr)
         return 1
+    if is_custom:
+        print(f"Note: using user-defined specialist from {feature_root}")
 
     print(f"Rendering feature: {args.feature}")
     print(f"  template root: {feature_root}")

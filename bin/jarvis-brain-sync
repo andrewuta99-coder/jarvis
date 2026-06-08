@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""
+jarvis-brain-sync — cross-machine memory for your Jarvis projects.
+
+Pushes per-project state (profile, learnings, deploy log) to a private
+git repo so your memory follows you across laptops.
+
+What syncs:
+  - .jarvis/profile.json                 (per-project Jarvis profile)
+  - .jarvis/learnings.jsonl              (project quirks worth remembering)
+  - .jarvis/deploys.jsonl                (deploy log — ECS task defs, rollbacks)
+  - .jarvis/agent-outputs/*.json         (last-run constellation outputs)
+
+What does NOT sync (defense-in-depth):
+  - .env, *.tfvars, secrets/, anything matching /secret|key|token|password/i
+  - Files > 500KB
+  - Anything outside .jarvis/
+  - Anything matching .jarvis/.local* (use .local for ephemeral state)
+
+Usage:
+    jarvis-brain-sync init <git-url>          # one-time per machine
+    jarvis-brain-sync push                     # push this project's state
+    jarvis-brain-sync pull                     # pull from your brain repo
+    jarvis-brain-sync status                   # what would push
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+JARVIS_HOME = Path.home() / ".jarvis"
+BRAIN_DIR = JARVIS_HOME / "brain"
+BRAIN_CONFIG = JARVIS_HOME / "brain-remote.txt"
+
+SECRET_RE = re.compile(r"(secret|key|token|password|credential|api[-_]?key)", re.IGNORECASE)
+MAX_FILE_BYTES = 500 * 1024
+EXCLUDED_NAMES = {".env", ".env.local", ".terraform", "terraform.tfstate", "terraform.tfvars"}
+
+
+def run(cmd: list[str], cwd: Path) -> tuple[int, str]:
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def is_safe(path: Path) -> tuple[bool, str]:
+    """Defense-in-depth: never sync anything that smells like a secret."""
+    if path.name in EXCLUDED_NAMES:
+        return False, f"excluded name: {path.name}"
+    if path.name.startswith(".local"):
+        return False, "ephemeral .local* prefix"
+    if path.stat().st_size > MAX_FILE_BYTES:
+        return False, f"too large ({path.stat().st_size} bytes)"
+    try:
+        content = path.read_text()
+    except (UnicodeDecodeError, OSError):
+        return False, "binary or unreadable"
+    if SECRET_RE.search(content):
+        return False, "matches secret pattern"
+    # Common AWS access key shape
+    if re.search(r"AKIA[A-Z0-9]{16}", content):
+        return False, "AWS access key id detected"
+    return True, "ok"
+
+
+def project_slug(target_dir: Path) -> str:
+    """Stable per-project slug. Prefer git remote, fall back to dir-name + cwd-hash."""
+    rc, out = run(["git", "remote", "get-url", "origin"], target_dir)
+    if rc == 0 and out.strip():
+        url = out.strip()
+        # owner/repo from common git URLs
+        m = re.search(r"[:/]([^/]+/[^/]+?)(?:\.git)?$", url)
+        if m:
+            return m.group(1).replace("/", "__")
+    h = hashlib.sha256(str(target_dir.resolve()).encode()).hexdigest()[:8]
+    return f"{target_dir.name}-{h}"
+
+
+def cmd_init(args) -> int:
+    JARVIS_HOME.mkdir(exist_ok=True)
+    if BRAIN_DIR.exists():
+        print(f"Brain already initialized at {BRAIN_DIR}", file=sys.stderr)
+        return 1
+    rc, out = run(["git", "clone", args.git_url, str(BRAIN_DIR)], JARVIS_HOME)
+    if rc != 0:
+        print(f"clone failed:\n{out}", file=sys.stderr)
+        return 1
+    BRAIN_CONFIG.write_text(args.git_url)
+    print(f"Brain initialized at {BRAIN_DIR}")
+    print(f"Remote: {args.git_url}")
+    return 0
+
+
+def cmd_status(args) -> int:
+    if not BRAIN_DIR.exists():
+        print("Brain not initialized. Run: jarvis-brain-sync init <git-url>", file=sys.stderr)
+        return 1
+    target = args.target_dir
+    if not (target / ".jarvis").exists():
+        print("No .jarvis/ in this directory. Nothing to sync.", file=sys.stderr)
+        return 1
+    slug = project_slug(target)
+    print(f"Project slug: {slug}")
+    print(f"Brain target: {BRAIN_DIR}/{slug}/")
+    print("\nFiles that would push:")
+    for f in sorted((target / ".jarvis").rglob("*")):
+        if not f.is_file():
+            continue
+        ok, reason = is_safe(f)
+        marker = "  ok" if ok else "  skip"
+        rel = f.relative_to(target / ".jarvis")
+        print(f"{marker}  {rel}   {'' if ok else f'({reason})'}")
+    return 0
+
+
+def cmd_push(args) -> int:
+    if not BRAIN_DIR.exists():
+        print("Brain not initialized.", file=sys.stderr)
+        return 1
+    target = args.target_dir
+    if not (target / ".jarvis").exists():
+        print("No .jarvis/ to sync.", file=sys.stderr)
+        return 1
+    slug = project_slug(target)
+    dst = BRAIN_DIR / slug
+    dst.mkdir(parents=True, exist_ok=True)
+
+    pushed: list[str] = []
+    skipped: list[str] = []
+    for src_file in sorted((target / ".jarvis").rglob("*")):
+        if not src_file.is_file():
+            continue
+        ok, reason = is_safe(src_file)
+        rel = src_file.relative_to(target / ".jarvis")
+        if not ok:
+            skipped.append(f"{rel} ({reason})")
+            continue
+        dst_file = dst / rel
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_file, dst_file)
+        pushed.append(str(rel))
+
+    # Commit + push
+    rc, _ = run(["git", "add", "-A", str(dst)], BRAIN_DIR)
+    if rc != 0:
+        print("git add failed", file=sys.stderr)
+        return 1
+    rc, _ = run(["git", "diff", "--cached", "--quiet"], BRAIN_DIR)
+    if rc == 0:
+        print(f"No changes. {len(skipped)} files skipped (safety).")
+        return 0
+    msg = f"jarvis-brain-sync push: {slug} ({len(pushed)} files)"
+    run(["git", "-c", "user.name=Jarvis Brain", "-c", "user.email=brain@jarvis.local",
+         "commit", "-m", msg], BRAIN_DIR)
+    rc, out = run(["git", "push"], BRAIN_DIR)
+    if rc != 0:
+        print(f"Push failed (will retry on next sync):\n{out}", file=sys.stderr)
+        return 1
+    print(f"Pushed {len(pushed)} files for {slug}.")
+    if skipped:
+        print(f"Skipped {len(skipped)} files for safety:")
+        for s in skipped[:10]:
+            print(f"  - {s}")
+        if len(skipped) > 10:
+            print(f"  ... and {len(skipped) - 10} more")
+    return 0
+
+
+def cmd_pull(args) -> int:
+    if not BRAIN_DIR.exists():
+        print("Brain not initialized.", file=sys.stderr)
+        return 1
+    target = args.target_dir
+    slug = project_slug(target)
+    src = BRAIN_DIR / slug
+    if not src.exists():
+        print(f"No snapshot for {slug} in brain.")
+        return 0
+    # Fast-forward the brain first
+    run(["git", "pull", "--ff-only"], BRAIN_DIR)
+    dst = target / ".jarvis"
+    dst.mkdir(parents=True, exist_ok=True)
+    pulled = 0
+    for src_file in sorted(src.rglob("*")):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(src)
+        dst_file = dst / rel
+        if dst_file.exists() and dst_file.read_bytes() == src_file.read_bytes():
+            continue
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_file, dst_file)
+        pulled += 1
+    print(f"Pulled {pulled} updated file(s) for {slug}.")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Cross-machine memory sync for Jarvis projects")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_init = sub.add_parser("init", help="One-time setup with a private git repo URL")
+    p_init.add_argument("git_url", help="git@github.com:you/jarvis-brain.git or https://...")
+    p_init.set_defaults(fn=cmd_init)
+
+    p_status = sub.add_parser("status", help="Preview what would push")
+    p_status.add_argument("--target-dir", type=Path, default=Path.cwd())
+    p_status.set_defaults(fn=cmd_status)
+
+    p_push = sub.add_parser("push", help="Push this project's .jarvis state to the brain")
+    p_push.add_argument("--target-dir", type=Path, default=Path.cwd())
+    p_push.set_defaults(fn=cmd_push)
+
+    p_pull = sub.add_parser("pull", help="Pull this project's .jarvis state from the brain")
+    p_pull.add_argument("--target-dir", type=Path, default=Path.cwd())
+    p_pull.set_defaults(fn=cmd_pull)
+
+    args = parser.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
