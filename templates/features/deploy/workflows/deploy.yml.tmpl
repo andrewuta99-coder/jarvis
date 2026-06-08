@@ -1,0 +1,93 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write     # OIDC — required
+  contents: read
+
+env:
+  AWS_REGION: {{REGION}}
+  APP_NAME: {{APP_NAME}}
+  ECR_REPO_URL: {{ECR_REPO_URL}}
+  ECS_CLUSTER: {{ECS_CLUSTER_NAME}}
+  ECS_SERVICE: {{APP_NAME}}-api
+
+jobs:
+  backend:
+    name: Backend (build + deploy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: {{GITHUB_OIDC_ROLE_ARN}}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker buildx build --platform linux/amd64 \
+            -t $ECR_REPO_URL:$IMAGE_TAG \
+            -t $ECR_REPO_URL:latest \
+            --push backend/
+
+      - name: Render new task definition
+        id: render
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $APP_NAME-api \
+            --region $AWS_REGION \
+            --query 'taskDefinition' > /tmp/td.json
+
+          jq --arg IMG "$ECR_REPO_URL:${{ github.sha }}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = $IMG' \
+            /tmp/td.json > /tmp/td-new.json
+
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file:///tmp/td-new.json \
+            --region $AWS_REGION \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_definition_arn=$NEW_ARN" >> $GITHUB_OUTPUT
+
+      - name: Roll out
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition ${{ steps.render.outputs.task_definition_arn }} \
+            --region $AWS_REGION \
+            --force-new-deployment > /dev/null
+
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION
+
+      - name: Smoke test
+        run: |
+          curl -fsS https://$APP_NAME.jarvis.app/api/health || \
+            (echo "Health check failed — rolling back" && \
+             aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE \
+               --task-definition $APP_NAME-api --force-new-deployment && exit 1)
+
+  frontend:
+    name: Frontend (Amplify auto-deploy)
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - uses: actions/checkout@v4
+      # Amplify is webhook-driven on push to main — this job just verifies it deployed.
+      - name: Wait for Amplify deploy
+        run: |
+          sleep 60
+          curl -fsS https://main.{{AMPLIFY_APP_ID}}.amplifyapp.com >/dev/null

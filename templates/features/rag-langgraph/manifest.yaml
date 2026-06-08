@@ -1,0 +1,35 @@
+feature: rag-langgraph
+version: 0.0.1
+status: stub-for-v0.0.3
+specialist: jarvis-rag
+description: |
+  LangGraph state machine on top of LangChain + Bedrock. Use this when your
+  agent needs explicit state, looping, conditional routing, human-in-the-loop
+  approval gates, or multi-tool reasoning more elaborate than a single chain.
+
+  v0.0.3 status: scaffold only.
+
+stack_choice_when:
+  this_feature_when:
+    - agent reasoning with explicit state graph
+    - conditional routing (Choose A or B based on output)
+    - long-running with checkpoints (LangGraph's persistence layer over DDB)
+    - human approval steps mid-flow
+    - want clear state-machine inspection
+
+key_patterns:
+  - StateGraph with typed Pydantic state
+  - DynamoDB checkpointer (we already have the chat_threads table; LangGraph
+    persistence saves graph state per thread_id)
+  - Conditional edges driven by tool-output classification
+  - Subgraphs for nested reasoning (e.g., one subgraph per step of a doc
+    processing pipeline)
+  - LangGraph Studio for visual debugging in dev
+
+source_files_planned:
+  - python/service.py.tmpl
+  - python/graph.py.tmpl       (StateGraph definition)
+  - python/nodes.py.tmpl       (individual nodes)
+  - python/state.py.tmpl       (Pydantic state model)
+  - python/checkpointer.py.tmpl (DDB-backed)
+  - requirements_addendum.txt.tmpl

@@ -1,0 +1,42 @@
+feature: pipeline
+version: 0.0.1
+status: stub-for-v0.0.3
+specialist: jarvis-pipeline
+description: |
+  Step Functions + S3 inbox + Lambda orchestrators for heavy AI / ML
+  workloads. Lifted from CloudMortgage's Alpamayo pipeline. Use this when
+  the AI feature's synchronous chat is not enough — long-running closed-loop
+  experiments, batch document processing, multi-step orchestration.
+
+  v0.0.3 status: scaffold only. Full templates arrive with /jarvis-add-pipeline.
+
+key_patterns:
+  - **S3 inbox protocol**: alpamayo-inbox/{queued,claimed/<run_id>,done,failed,
+    rejected,needs_l40s}. State transitions via S3 copy_object (atomic).
+  - **Tier gating**: claim Lambda checks subscription tier (Ultra/Enterprise
+    by default), rejects with explanatory rejection.json + SES notification.
+  - **STOP kill switch**: Lambda checks for alpamayo-inbox/STOP key before
+    claiming. Lets operator pause the pipeline without state machine changes.
+  - **Step Functions Catch -> FailureHandler**: every Lambda errors flow to
+    a single failure handler that moves the claim to failed/ with diagnostic
+    context and emails the responsible user.
+  - **Autonomous proposer**: when inbox empty, optional plan Lambda generates
+    new experiments via Gemini / Claude / etc. and writes back to inbox.
+    Pipeline self-sustains for unattended exploration.
+  - **closed_loop_enabled YAML gate**: Choice routing in the state machine
+    reads a field from the proposal YAML to decide whether to enter the
+    GPU-heavy closed-loop branch vs the standard branch.
+
+source_files_planned:
+  - iac/stepfunctions_state_machine.tf.tmpl
+  - iac/lambda_claim.tf.tmpl
+  - iac/lambda_plan.tf.tmpl
+  - iac/lambda_gpu_ready.tf.tmpl
+  - iac/lambda_finalise.tf.tmpl
+  - iac/lambda_failure.tf.tmpl
+  - lambda/claim/handler.py.tmpl
+  - lambda/plan/handler.py.tmpl
+  - lambda/gpu_ready/handler.py.tmpl
+  - lambda/finalise/handler.py.tmpl
+  - lambda/failure/handler.py.tmpl
+  - iac/s3_inbox_bucket.tf.tmpl

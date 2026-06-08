@@ -1,0 +1,121 @@
+"""Stripe webhook event router with constant-time signature verify."""
+from __future__ import annotations
+
+import logging
+import time
+
+import stripe
+
+from core import dynamodb as ddb
+from core import secrets as secrets_module
+from core.errors import BadRequest
+
+logger = logging.getLogger(__name__)
+
+
+def _webhook_secret() -> str:
+    sec = secrets_module.get("stripe")
+    if isinstance(sec, dict):
+        return sec.get("webhook_secret", "")
+    return ""
+
+
+async def handle(*, body: bytes, signature: str) -> dict:
+    """Verify, idempotently process. Idempotency at the event level —
+    Stripe retries the same event on failures; our DDB table keyed by
+    event.id ensures we never double-process."""
+    try:
+        event = stripe.Webhook.construct_event(body, signature, _webhook_secret())
+    except stripe.SignatureVerificationError:
+        # Constant-time check is inside stripe.Webhook.construct_event
+        raise BadRequest("Invalid signature")
+    except Exception as exc:
+        logger.error("webhook_parse_failed", extra={"error": str(exc)})
+        raise BadRequest("Invalid payload")
+
+    # Idempotency by event ID
+    idemp = ddb.idempotency_table()
+    try:
+        idemp.put_item(
+            Item={
+                "request_id": event.id,
+                "ttl": int(time.time()) + 86400,   # 24h
+                "kind": "stripe_webhook",
+                "event_type": event.type,
+            },
+            ConditionExpression="attribute_not_exists(request_id)",
+        )
+    except idemp.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.info("webhook_replay_ignored", extra={"event_id": event.id, "type": event.type})
+        return {"status": "replay_ignored"}
+
+    # Dispatch
+    handler = _ROUTING.get(event.type)
+    if not handler:
+        logger.info("webhook_unhandled", extra={"event_type": event.type})
+        return {"status": "ignored"}
+    await handler(event)
+    return {"status": "processed"}
+
+
+# ─── Event handlers ───────────────────────────────────────────────────────
+async def _on_subscription_created(event):
+    obj = event.data.object
+    user_id = obj.metadata.get("userId") or _user_id_from_customer(obj.customer)
+    if not user_id:
+        return
+    ddb.subscriptions_table().put_item(Item={
+        "subscription_id": obj.id,
+        "userId": user_id,
+        "stripe_customer_id": obj.customer,
+        "status": obj.status,
+        "current_period_start": obj.current_period_start,
+        "current_period_end": obj.current_period_end,
+        "tier": _tier_from_subscription(obj),
+    })
+
+
+async def _on_subscription_updated(event):
+    await _on_subscription_created(event)   # same upsert
+
+
+async def _on_subscription_deleted(event):
+    obj = event.data.object
+    ddb.subscriptions_table().update_item(
+        Key={"subscription_id": obj.id},
+        UpdateExpression="SET #s = :s",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":s": "canceled"},
+    )
+
+
+async def _on_invoice_payment_failed(event):
+    obj = event.data.object
+    logger.warning("invoice_payment_failed",
+                   extra={"subscription": obj.subscription, "customer": obj.customer})
+
+
+def _user_id_from_customer(customer_id: str) -> str | None:
+    from boto3.dynamodb.conditions import Key
+    resp = ddb.customers_table().query(
+        IndexName="stripe_customer-index",
+        KeyConditionExpression=Key("stripe_customer_id").eq(customer_id),
+    )
+    items = resp.get("Items", [])
+    return items[0]["userId"] if items else None
+
+
+def _tier_from_subscription(sub) -> str:
+    try:
+        return sub["items"]["data"][0]["price"]["lookup_key"] or "unknown"
+    except (KeyError, IndexError):
+        return "unknown"
+
+
+_ROUTING = {
+    "customer.subscription.created":  _on_subscription_created,
+    "customer.subscription.updated":  _on_subscription_updated,
+    "customer.subscription.deleted":  _on_subscription_deleted,
+    "invoice.payment_failed":         _on_invoice_payment_failed,
+    "invoice.payment_succeeded":      _on_subscription_created,   # ensure sub is current
+}

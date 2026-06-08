@@ -1,0 +1,113 @@
+"""
+Send transactional email via SES.
+
+Always-on patterns:
+  - Pre-send suppression check (skip suppressed addresses)
+  - Configuration set publishes bounce + complaint events to SNS
+  - Templates rendered with Jinja-style {{var}} substitution (HTML-escaped)
+"""
+from __future__ import annotations
+
+import html
+import logging
+import os
+import re
+import time
+from pathlib import Path
+
+import boto3
+
+from core import dynamodb as ddb
+
+logger = logging.getLogger(__name__)
+
+REGION = os.environ.get("AWS_REGION", "{{REGION}}")
+SENDER = os.environ.get("EMAIL_SENDER", "noreply@{{DOMAIN}}")
+CONFIG_SET = os.environ.get("EMAIL_CONFIG_SET", "{{APP_NAME}}-config-set")
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+SLOT_RE = re.compile(r"{{\s*(\w+)\s*}}")
+
+_ses = None
+
+
+def _client():
+    global _ses
+    if _ses is None:
+        _ses = boto3.client("sesv2", region_name=REGION)
+    return _ses
+
+
+def _is_suppressed(email: str) -> bool:
+    """Check the suppression table before sending. Cheap GetItem on hash key."""
+    try:
+        resp = ddb.table(os.environ.get("EMAIL_SUPPRESSION_TABLE", "{{APP_NAME}}-email-suppression")).get_item(
+            Key={"email": email.lower()}
+        )
+        return "Item" in resp
+    except Exception as exc:
+        # Don't fail send if the suppression check has a transient error;
+        # log and proceed.
+        logger.warning("suppression_check_failed", extra={"email_hash": hash(email), "error": str(exc)})
+        return False
+
+
+def _render(template_path: Path, vars: dict[str, object]) -> str:
+    text = template_path.read_text()
+    def sub(m):
+        key = m.group(1)
+        return html.escape(str(vars.get(key, "")))
+    return SLOT_RE.sub(sub, text)
+
+
+async def send_email(*, to: str, template: str, vars: dict[str, object], subject: str | None = None) -> dict:
+    if _is_suppressed(to):
+        logger.info("send_skipped_suppressed", extra={"email_hash": hash(to)})
+        return {"status": "suppressed"}
+
+    template_file = TEMPLATES_DIR / f"{template}.html"
+    if not template_file.exists():
+        raise FileNotFoundError(f"email template not found: {template}")
+
+    body_html = _render(template_file, vars)
+    subj = subject or _default_subject(template, vars)
+
+    started = time.perf_counter()
+    resp = _client().send_email(
+        FromEmailAddress=SENDER,
+        Destination={"ToAddresses": [to]},
+        Content={"Simple": {
+            "Subject": {"Data": subj, "Charset": "UTF-8"},
+            "Body": {"Html": {"Data": body_html, "Charset": "UTF-8"}},
+        }},
+        ConfigurationSetName=CONFIG_SET,
+    )
+    duration_ms = (time.perf_counter() - started) * 1000
+    logger.info("email_sent", extra={
+        "template": template,
+        "message_id": resp.get("MessageId"),
+        "duration_ms": round(duration_ms, 1),
+    })
+    return {"status": "sent", "message_id": resp.get("MessageId")}
+
+
+async def send_email_raw(*, to: str, subject: str, html_body: str) -> dict:
+    if _is_suppressed(to):
+        return {"status": "suppressed"}
+    resp = _client().send_email(
+        FromEmailAddress=SENDER,
+        Destination={"ToAddresses": [to]},
+        Content={"Simple": {
+            "Subject": {"Data": subject, "Charset": "UTF-8"},
+            "Body": {"Html": {"Data": html_body, "Charset": "UTF-8"}},
+        }},
+        ConfigurationSetName=CONFIG_SET,
+    )
+    return {"status": "sent", "message_id": resp.get("MessageId")}
+
+
+def _default_subject(template: str, vars: dict) -> str:
+    return {
+        "welcome": f"Welcome to {{APP_NAME}}",
+        "signup_verification": "Verify your email",
+        "password_reset": "Reset your password",
+    }.get(template, "{{APP_NAME}}")

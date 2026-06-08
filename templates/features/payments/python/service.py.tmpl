@@ -1,0 +1,100 @@
+"""Stripe operations. Customers, subscriptions, checkout, portal."""
+from __future__ import annotations
+
+import logging
+import os
+
+import stripe
+
+from boto3.dynamodb.conditions import Key
+
+from core import dynamodb as ddb
+from core import secrets as secrets_module
+from core.auth_middleware import AuthUser
+from core.errors import BadRequest
+
+logger = logging.getLogger(__name__)
+
+APP_URL = os.environ.get("APP_URL", "https://{{APP_NAME}}.jarvis.app")
+
+
+def _configure_stripe() -> None:
+    sec = secrets_module.get("stripe")
+    if isinstance(sec, dict):
+        stripe.api_key = sec.get("secret_key", "")
+    else:
+        stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+
+
+# Price IDs by tier — set in stripe dashboard, override via env at deploy
+TIER_PRICES = {
+    "pro":      os.environ.get("STRIPE_PRICE_PRO", ""),
+    "business": os.environ.get("STRIPE_PRICE_BUSINESS", ""),
+}
+
+
+async def _get_or_create_customer(user: AuthUser) -> str:
+    """Return Stripe customer_id for this user, creating if needed."""
+    table = ddb.customers_table()
+    item = table.get_item(Key={"userId": user.user_id}).get("Item")
+    if item and item.get("stripe_customer_id"):
+        return item["stripe_customer_id"]
+
+    _configure_stripe()
+    customer = stripe.Customer.create(
+        email=user.email,
+        metadata={"userId": user.user_id, "tenantId": user.tenant_id},
+    )
+    table.put_item(Item={
+        "userId": user.user_id,
+        "stripe_customer_id": customer.id,
+        "email": user.email,
+        "tenantId": user.tenant_id,
+    })
+    return customer.id
+
+
+async def create_checkout_session(*, user: AuthUser, tier: str) -> dict:
+    if tier not in TIER_PRICES or not TIER_PRICES[tier]:
+        raise BadRequest(f"Unknown or unconfigured tier: {tier}")
+    _configure_stripe()
+    customer_id = await _get_or_create_customer(user)
+
+    session = stripe.checkout.Session.create(
+        customer=customer_id,
+        mode="subscription",
+        line_items=[{"price": TIER_PRICES[tier], "quantity": 1}],
+        success_url=f"{APP_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{APP_URL}/billing",
+        # Stripe-side idempotency belt-and-suspenders to our DDB idempotency
+        idempotency_key=f"checkout-{user.user_id}-{tier}",
+    )
+    return {"url": session.url, "session_id": session.id}
+
+
+async def customer_portal_url(*, user: AuthUser) -> dict:
+    _configure_stripe()
+    customer_id = await _get_or_create_customer(user)
+    portal = stripe.billing_portal.Session.create(
+        customer=customer_id,
+        return_url=f"{APP_URL}/billing",
+    )
+    return {"url": portal.url}
+
+
+async def user_subscriptions(*, user_id: str) -> dict:
+    table = ddb.subscriptions_table()
+    resp = table.query(
+        IndexName="userId-index",
+        KeyConditionExpression=Key("userId").eq(user_id) & Key("status").eq("active"),
+    )
+    return {"active": resp.get("Items", [])}
+
+
+async def cancel_subscription(*, user: AuthUser) -> None:
+    subs = await user_subscriptions(user_id=user.user_id)
+    if not subs["active"]:
+        return
+    _configure_stripe()
+    for sub in subs["active"]:
+        stripe.Subscription.modify(sub["subscription_id"], cancel_at_period_end=True)

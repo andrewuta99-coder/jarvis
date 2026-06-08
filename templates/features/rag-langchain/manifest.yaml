@@ -1,0 +1,35 @@
+feature: rag-langchain
+version: 0.0.1
+status: stub-for-v0.0.3
+specialist: jarvis-rag
+description: |
+  LangChain-flavored RAG using Bedrock as the LLM + embeddings provider.
+  Alternative to the default AI feature's boto3 invoke_agent path. Pick this
+  when you want LangChain's retriever/chain composition for multi-step
+  reasoning, custom tools, or complex prompt templates.
+
+  v0.0.3 status: scaffold only.
+
+stack_choice_when:
+  default_ai_feature_when:
+    - simple chat with KB-aware responses
+    - lowest dep footprint (just boto3)
+    - want Bedrock's native streaming + agent traces
+  this_feature_when:
+    - complex chain composition (rerank, multi-hop)
+    - want LangSmith observability
+    - already have LangChain code to integrate
+
+key_patterns:
+  - langchain_aws.ChatBedrockConverse as the LLM (Bedrock-native, supports
+    Nova + Claude + Titan via the same interface)
+  - langchain_aws.AmazonKnowledgeBasesRetriever wrapping Bedrock KB
+  - RAG chain via LCEL — retriever | prompt | llm | output_parser
+  - Pydantic structured output for typed responses
+
+source_files_planned:
+  - python/service.py.tmpl   (replaces ai/python/service.py at install time)
+  - python/chains.py.tmpl    (chain definitions)
+  - python/retrievers.py.tmpl
+  - python/tracing.py.tmpl   (optional LangSmith hook)
+  - requirements_addendum.txt.tmpl  (langchain-aws, langchain-core)

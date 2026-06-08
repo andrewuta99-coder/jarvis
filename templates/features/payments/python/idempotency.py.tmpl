@@ -1,0 +1,90 @@
+"""
+Idempotency decorator — the 2026-01-11 CloudMortgage fix.
+
+Every credit-charging endpoint MUST be decorated with @idempotency.
+If a request with the same Idempotency-Key header arrives twice, the
+second call returns the cached response without re-running the body.
+"""
+from __future__ import annotations
+
+import functools
+import hashlib
+import json
+import time
+from typing import Callable
+
+from fastapi import Request
+
+from core import dynamodb as ddb
+
+
+def _key_for(request: Request) -> str:
+    """Prefer client-supplied Idempotency-Key. Fall back to (route, user, body-hash)."""
+    explicit = request.headers.get("Idempotency-Key")
+    if explicit:
+        return f"explicit:{explicit}"
+    # Derive a fingerprint: route + user + body
+    user_id = getattr(request.state, "user", None)
+    user_id = user_id.user_id if user_id else "anon"
+    body = getattr(request.state, "_raw_body", b"")
+    fingerprint = hashlib.sha256(f"{request.url.path}|{user_id}|".encode() + body).hexdigest()
+    return f"derived:{fingerprint}"
+
+
+def idempotency(*, ttl_seconds: int = 3600):
+    """Decorator factory. Applied at the route handler level."""
+    def decorator(fn: Callable):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            request: Request | None = None
+            for v in list(args) + list(kwargs.values()):
+                if isinstance(v, Request):
+                    request = v
+                    break
+            if request is None:
+                return await fn(*args, **kwargs)
+
+            key = _key_for(request)
+            table = ddb.idempotency_table()
+            now = int(time.time())
+
+            existing = table.get_item(Key={"request_id": key}).get("Item")
+            if existing:
+                # Cache hit — return stored response if marked complete
+                if existing.get("status") == "complete":
+                    return json.loads(existing["response"])
+                # PENDING — concurrent call. Return 409 conflict to be safe.
+                from core.errors import Conflict
+                raise Conflict("Request already in flight")
+
+            # Mark pending
+            try:
+                table.put_item(
+                    Item={
+                        "request_id": key,
+                        "status": "pending",
+                        "started_at": now,
+                        "ttl": now + ttl_seconds,
+                    },
+                    ConditionExpression="attribute_not_exists(request_id)",
+                )
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                from core.errors import Conflict
+                raise Conflict("Request already in flight")
+
+            try:
+                result = await fn(*args, **kwargs)
+            except Exception:
+                # Don't cache failures — let retries succeed
+                table.delete_item(Key={"request_id": key})
+                raise
+
+            table.update_item(
+                Key={"request_id": key},
+                UpdateExpression="SET #s = :c, response = :r",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":c": "complete", ":r": json.dumps(result, default=str)},
+            )
+            return result
+        return wrapper
+    return decorator

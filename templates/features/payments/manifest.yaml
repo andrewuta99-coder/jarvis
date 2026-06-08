@@ -1,0 +1,21 @@
+feature: payments
+version: 0.0.1
+specialist: jarvis-payments
+description: |
+  Stripe customer + subscription + checkout + webhook handler with the
+  2026-01-11 CloudMortgage idempotency fix. Webhook signing secret in
+  Secrets Manager. Constant-time webhook signature verify.
+
+inputs:
+  required: [region, app_name, account_id, task_role_name, domain]
+outputs: [stripe_secret_arn, stripe_webhook_url, customer_portal_route]
+
+files:
+  always:
+    - { src: python/__init__.py.tmpl,        dst: backend/payments/__init__.py }
+    - { src: python/routes.py.tmpl,          dst: backend/payments/routes.py }
+    - { src: python/service.py.tmpl,         dst: backend/payments/service.py }
+    - { src: python/webhook_handler.py.tmpl, dst: backend/payments/webhook_handler.py }
+    - { src: python/idempotency.py.tmpl,     dst: backend/payments/idempotency.py }
+    - { src: iac/secrets.tf.tmpl,            dst: iac/payments/secrets.tf }
+    - { src: iac/iam_policy.tf.tmpl,         dst: iac/iam/payments_policy.tf }

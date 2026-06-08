@@ -1,0 +1,24 @@
+feature: email
+version: 0.0.1
+specialist: jarvis-email
+description: |
+  SES + VPC endpoint (the 2026-12-22 fix). Bounce/complaint SNS topics with
+  Lambda suppression-list updater. send_email() helper with pre-send
+  suppression check.
+
+inputs:
+  required: [region, app_name, account_id, task_role_name, domain]
+outputs: [sender_identity, ses_vpc_endpoint_arn, bounce_topic_arn, suppression_lambda_arn]
+
+files:
+  always:
+    - { src: python/__init__.py.tmpl,           dst: backend/email/__init__.py }
+    - { src: python/service.py.tmpl,            dst: backend/email/service.py }
+    - { src: python/templates/welcome.html.tmpl,        dst: backend/email/templates/welcome.html }
+    - { src: python/templates/signup_verification.html.tmpl,  dst: backend/email/templates/signup_verification.html }
+    - { src: python/templates/password_reset.html.tmpl, dst: backend/email/templates/password_reset.html }
+    - { src: iac/ses.tf.tmpl,                   dst: iac/email/ses.tf }
+    - { src: iac/sns_topics.tf.tmpl,            dst: iac/email/sns_topics.tf }
+    - { src: iac/lambda_suppression.tf.tmpl,    dst: iac/email/lambda_suppression.tf }
+    - { src: lambda/suppression_handler.py.tmpl, dst: lambda/email_suppression/handler.py }
+    - { src: iac/iam_policy.tf.tmpl,            dst: iac/iam/email_policy.tf }

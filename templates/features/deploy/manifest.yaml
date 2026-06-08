@@ -1,0 +1,15 @@
+feature: deploy
+version: 0.0.1
+specialist: jarvis-deploy
+description: GitHub Actions OIDC deploy workflow + Amplify Hosting for frontend.
+
+inputs:
+  required: [ecr_repo_url, github_oidc_role_arn, ecs_cluster_name, app_name, region, github_owner, github_repo]
+outputs: [github_actions_url, amplify_app_id, amplify_branch_url]
+
+files:
+  always:
+    - { src: workflows/deploy.yml.tmpl,   dst: .github/workflows/deploy.yml }
+    - { src: workflows/test.yml.tmpl,     dst: .github/workflows/test.yml }
+    - { src: iac/amplify.tf.tmpl,         dst: iac/deploy/amplify.tf }
+    - { src: scripts/deploy.sh.tmpl,      dst: scripts/deploy.sh }
