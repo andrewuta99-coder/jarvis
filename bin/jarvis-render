@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""
+jarvis-render — deterministic template renderer.
+
+Reads a feature's manifest.yaml, walks its `files.always` and applicable
+`files.conditional` entries, substitutes {{SLOTS}} with values from a
+context, and writes to the target directory. Adds hash headers so
+/jarvis-upgrade can detect user edits.
+
+Usage:
+    jarvis-render --feature networking --context ctx.json --target-dir /path/to/app
+
+Context file (JSON):
+    {
+      "JARVIS_VERSION": "0.0.3",
+      "ISO_DATE": "2026-06-08",
+      "REGION": "us-east-1",
+      "APP_NAME": "my-saas",
+      "ACCOUNT_ID": "618143339406",
+      "GITHUB_OWNER": "andrewuta99-coder",
+      "GITHUB_REPO": "my-saas",
+      "DOMAIN": "my-saas.jarvis.app",
+      "TASK_ROLE_NAME": "my-saas-task",
+      "features": ["auth", "ai", "email", "payments"]
+    }
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+# Lightweight YAML — we control the manifest schema, so a stdlib parse is enough.
+try:
+    import yaml  # type: ignore
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
+
+SLOT_RE = re.compile(r"\{\{\s*([A-Z_][A-Z0-9_]*)\s*\}\}")
+
+
+def load_manifest(path: Path) -> dict:
+    text = path.read_text()
+    if _HAS_YAML:
+        return yaml.safe_load(text)
+    # Minimal YAML parser for our manifest shape (well-known schema)
+    return _parse_manifest_fallback(text)
+
+
+def _parse_manifest_fallback(text: str) -> dict:
+    """Tiny YAML parser specific to manifest.yaml shape. Supports:
+    - inline-dict entries:   - { src: x, dst: y, if_feature: z }
+    - block-style entries:   - if_feature: z
+                               src: x
+                               dst: y
+    No external dep. We control the manifest schema, so this is enough.
+    """
+    result: dict = {"files": {"always": [], "conditional": []}}
+    current_list = None
+    current_entry: dict | None = None
+    list_indent = None  # indent (in spaces) of the current list
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+
+        # Top-level scalar (key: value)
+        if indent == 0 and ":" in stripped and not stripped.startswith("-"):
+            current_list = None
+            current_entry = None
+            k, _, v = stripped.partition(":")
+            v = v.strip().strip('"')
+            if v:
+                result[k.strip()] = v
+            continue
+
+        # Section keys we care about
+        if stripped == "files:":
+            current_list = None
+            current_entry = None
+            continue
+        if stripped == "always:":
+            current_list = result["files"]["always"]
+            current_entry = None
+            list_indent = indent
+            continue
+        if stripped == "conditional:":
+            current_list = result["files"]["conditional"]
+            current_entry = None
+            list_indent = indent
+            continue
+
+        if current_list is None:
+            continue
+
+        # New entry — `- ...`
+        if stripped.startswith("-"):
+            entry_text = stripped[1:].strip()
+            if entry_text.startswith("{"):
+                # Inline dict
+                entry = _parse_inline_dict(entry_text)
+                current_list.append(entry)
+                current_entry = None
+            else:
+                # Block style — start a new dict
+                current_entry = {}
+                current_list.append(current_entry)
+                if ":" in entry_text:
+                    k, _, v = entry_text.partition(":")
+                    current_entry[k.strip()] = v.strip().strip('"')
+            continue
+
+        # Continuation of a block-style entry
+        if current_entry is not None and ":" in stripped:
+            k, _, v = stripped.partition(":")
+            current_entry[k.strip()] = v.strip().strip('"')
+
+    return result
+
+
+def _parse_inline_dict(text: str) -> dict:
+    """Parse simple inline YAML like { src: x, dst: y, if_feature: z }."""
+    text = text.strip().strip("{}").strip()
+    parts: dict = {}
+    for piece in re.split(r",(?![^()]*\))", text):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if ":" not in piece:
+            continue
+        k, _, v = piece.partition(":")
+        parts[k.strip()] = v.strip()
+    return parts
+
+
+def render(text: str, context: dict, *, strict: bool = False) -> str:
+    """Substitute {{SLOT}} occurrences. Unknown slots: empty in non-strict, error in strict."""
+    missing: list[str] = []
+
+    def sub(m: re.Match) -> str:
+        key = m.group(1)
+        if key in context:
+            return str(context[key])
+        missing.append(key)
+        return "" if not strict else m.group(0)
+
+    out = SLOT_RE.sub(sub, text)
+    if strict and missing:
+        raise ValueError(f"Missing context values: {sorted(set(missing))}")
+    return out
+
+
+def template_hash(tmpl_path: Path) -> str:
+    """First 12 chars of sha256 — used in generated-by header for upgrade tracking."""
+    return hashlib.sha256(tmpl_path.read_bytes()).hexdigest()[:12]
+
+
+def render_feature(
+    *,
+    feature_root: Path,
+    context: dict,
+    target_dir: Path,
+    feature_flags: set[str],
+    dry_run: bool = False,
+) -> list[Path]:
+    manifest_path = feature_root / "manifest.yaml"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"No manifest at {manifest_path}")
+    manifest = load_manifest(manifest_path)
+
+    files = manifest.get("files", {})
+    entries: list[dict] = list(files.get("always", []))
+    for cond in files.get("conditional", []):
+        if cond.get("if_feature") in feature_flags:
+            entries.append(cond)
+
+    written: list[Path] = []
+    for entry in entries:
+        src = entry.get("src")
+        dst = entry.get("dst")
+        if not src or not dst:
+            continue
+        src_path = feature_root / src
+        if not src_path.exists():
+            print(f"  skip (missing template): {src}", file=sys.stderr)
+            continue
+        dst_path = target_dir / dst
+        ctx = {**context, "TEMPLATE_HASH": template_hash(src_path)}
+        rendered = render(src_path.read_text(), ctx)
+        if dry_run:
+            print(f"  would write {dst} ({len(rendered)} bytes)")
+        else:
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            dst_path.write_text(rendered)
+            print(f"  wrote {dst}")
+        written.append(dst_path)
+    return written
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Jarvis template renderer")
+    parser.add_argument("--feature", required=True, help="Feature name (e.g., networking)")
+    parser.add_argument("--context", required=True, type=Path, help="Context JSON file")
+    parser.add_argument("--target-dir", required=True, type=Path, help="Where to write rendered files")
+    parser.add_argument("--templates-root", type=Path,
+                        default=Path(__file__).parent.parent / "templates" / "features",
+                        help="Root of templates/features/")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    context = json.loads(args.context.read_text())
+    feature_flags = set(context.get("features", []))
+    feature_root = args.templates_root / args.feature
+    if not feature_root.exists():
+        print(f"Feature not found: {feature_root}", file=sys.stderr)
+        return 1
+
+    print(f"Rendering feature: {args.feature}")
+    print(f"  template root: {feature_root}")
+    print(f"  target dir:    {args.target_dir}")
+    print(f"  feature flags: {sorted(feature_flags)}")
+
+    try:
+        written = render_feature(
+            feature_root=feature_root,
+            context=context,
+            target_dir=args.target_dir,
+            feature_flags=feature_flags,
+            dry_run=args.dry_run,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\n{len(written)} files {'would be written' if args.dry_run else 'written'}.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
