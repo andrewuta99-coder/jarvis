@@ -1,0 +1,51 @@
+# Build artifacts (bun-compiled binaries, added in v0.2+)
+# At v0, bin/jarvis is a shell-script stub — tracked in git.
+bin/*.bun-build
+bin/.version
+.bun-build*
+
+# Node / Bun
+node_modules/
+bun.lock
+*.log
+npm-debug.log*
+
+# Test output
+coverage/
+.nyc_output/
+test-output.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.cursor/
+
+# Local state (during dev)
+.jarvis-dev/
+*.local
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Terraform (we don't check in user projects)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Python (template testing)
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# AWS
+.aws-sam/

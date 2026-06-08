@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# jarvis-update-check — print "UPGRADE_AVAILABLE <old> <new>" if a new version exists upstream.
+# Throttled to once per hour. Network-failure-safe (silent on any error).
+# v0 stub.
+
+set -e
+
+JARVIS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+JARVIS_HOME="${JARVIS_HOME:-$HOME/.jarvis}"
+mkdir -p "$JARVIS_HOME"
+
+LAST_CHECK_FILE="$JARVIS_HOME/.last-update-check"
+THROTTLE_SECONDS=3600
+
+# Throttle: skip if checked within the last hour
+if [ -f "$LAST_CHECK_FILE" ]; then
+  LAST=$(cat "$LAST_CHECK_FILE" 2>/dev/null || echo 0)
+  NOW=$(date +%s)
+  AGE=$(( NOW - LAST ))
+  if [ "$AGE" -lt "$THROTTLE_SECONDS" ]; then
+    exit 0
+  fi
+fi
+
+date +%s > "$LAST_CHECK_FILE"
+
+# Read current version
+CURRENT=$(cat "$JARVIS_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')
+
+# Fetch upstream version (silent on failure)
+if [ -d "$JARVIS_DIR/.git" ]; then
+  UPSTREAM=$(cd "$JARVIS_DIR" && git fetch origin --quiet 2>/dev/null && git show origin/HEAD:VERSION 2>/dev/null | tr -d '[:space:]' || echo "")
+else
+  UPSTREAM=""
+fi
+
+if [ -n "$UPSTREAM" ] && [ "$CURRENT" != "$UPSTREAM" ]; then
+  echo "UPGRADE_AVAILABLE $CURRENT $UPSTREAM"
+fi
+
+exit 0

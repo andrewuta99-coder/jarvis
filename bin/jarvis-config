@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# jarvis-config — read/write Jarvis config in ~/.jarvis/config.yaml
+# v0 stub. Will be replaced by a bun-compiled binary.
+
+set -e
+
+JARVIS_HOME="${JARVIS_HOME:-$HOME/.jarvis}"
+CONFIG_FILE="$JARVIS_HOME/config.yaml"
+
+mkdir -p "$JARVIS_HOME"
+touch "$CONFIG_FILE"
+
+case "${1:-}" in
+  get)
+    KEY="$2"
+    if [ -z "$KEY" ]; then echo "Usage: jarvis-config get <key>" >&2; exit 1; fi
+    grep -E "^${KEY}:" "$CONFIG_FILE" 2>/dev/null | sed -E "s/^${KEY}:[[:space:]]*//" | tr -d '"' || true
+    ;;
+  set)
+    KEY="$2"
+    VAL="$3"
+    if [ -z "$KEY" ] || [ -z "$VAL" ]; then echo "Usage: jarvis-config set <key> <value>" >&2; exit 1; fi
+    # Remove existing key, then append
+    grep -v -E "^${KEY}:" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" 2>/dev/null || true
+    mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+    echo "${KEY}: ${VAL}" >> "$CONFIG_FILE"
+    ;;
+  list)
+    cat "$CONFIG_FILE"
+    ;;
+  *)
+    cat <<EOF
+Usage: jarvis-config <get|set|list> [key] [value]
+
+Examples:
+  jarvis-config set auto_upgrade true
+  jarvis-config get auto_upgrade
+  jarvis-config list
+
+Config file: $CONFIG_FILE
+EOF
+    ;;
+esac

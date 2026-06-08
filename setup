@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Jarvis setup — install skills into the user's Claude Code (or other host) skills directory.
+# v0: stubbed — just symlinks skills. v0.2: also runs bun build --compile to produce CLI binaries.
+
+set -e
+umask 077
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "Warning: bun is not installed. Jarvis CLI binaries will not be built." >&2
+  echo "Install bun: curl -fsSL https://bun.sh/install | bash" >&2
+  echo "Skills will still be symlinked, but the CLI will not work yet." >&2
+fi
+
+JARVIS_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOST="claude"
+TEAM_MODE=0
+QUIET=0
+
+# Parse flags
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host)   HOST="$2"; shift 2 ;;
+    --host=*) HOST="${1#*=}"; shift ;;
+    --team)   TEAM_MODE=1; shift ;;
+    --quiet)  QUIET=1; shift ;;
+    -h|--help)
+      echo "Usage: ./setup [--host claude|codex|cursor|...] [--team] [--quiet]"
+      echo ""
+      echo "Installs Jarvis skills for the specified AI agent host."
+      echo "Defaults to Claude Code (~/.claude/skills/)."
+      echo ""
+      echo "Supported hosts: claude, codex, cursor, opencode, factory,"
+      echo "                 kiro, hermes, slate, gbrain, openclaw"
+      exit 0
+      ;;
+    *)
+      echo "Unknown flag: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+log() { [ "$QUIET" -eq 0 ] && echo "$@" || true; }
+
+log "==> Jarvis setup"
+log "    Source:  $JARVIS_DIR"
+log "    Host:    $HOST"
+
+# Resolve install directory by host
+case "$HOST" in
+  claude)   SKILLS_ROOT="$HOME/.claude/skills" ;;
+  codex)    SKILLS_ROOT="$HOME/.codex/skills" ;;
+  cursor)   SKILLS_ROOT="$HOME/.cursor/skills" ;;
+  opencode) SKILLS_ROOT="$HOME/.config/opencode/skills" ;;
+  factory)  SKILLS_ROOT="$HOME/.factory/skills" ;;
+  kiro)     SKILLS_ROOT="$HOME/.kiro/skills" ;;
+  hermes)   SKILLS_ROOT="$HOME/.hermes/skills" ;;
+  slate)    SKILLS_ROOT="$HOME/.slate/skills" ;;
+  gbrain)   SKILLS_ROOT="$HOME/.gbrain/skills" ;;
+  openclaw) SKILLS_ROOT="$HOME/.openclaw/skills" ;;
+  *)
+    echo "Unsupported host: $HOST" >&2
+    echo "Supported: claude, codex, cursor, opencode, factory, kiro, hermes, slate, gbrain, openclaw" >&2
+    exit 1
+    ;;
+esac
+
+log "    Target:  $SKILLS_ROOT"
+mkdir -p "$SKILLS_ROOT"
+
+# Symlink the jarvis directory itself
+if [ -L "$SKILLS_ROOT/jarvis" ] || [ -e "$SKILLS_ROOT/jarvis" ]; then
+  rm -rf "$SKILLS_ROOT/jarvis"
+fi
+ln -snf "$JARVIS_DIR" "$SKILLS_ROOT/jarvis"
+log "    OK: linked $SKILLS_ROOT/jarvis -> $JARVIS_DIR"
+
+# Symlink each top-level skill directory as its own entry
+# (so /jarvis-init, /jarvis-add-users, etc. surface in Claude Code's skill list)
+SKILLS=(
+  init add-users add-files add-email add-ai add-payments
+  add-jobs add-realtime add-phone add-domain
+  deploy rollback doctor cost scale backup adopt eject
+  jarvis-upgrade careful freeze
+)
+
+for skill in "${SKILLS[@]}"; do
+  if [ -d "$JARVIS_DIR/$skill" ]; then
+    target="$SKILLS_ROOT/jarvis-$skill"
+    [ -L "$target" ] || [ -e "$target" ] && rm -rf "$target"
+    ln -snf "$JARVIS_DIR/$skill" "$target"
+    [ "$QUIET" -eq 0 ] && echo "    OK: linked jarvis-$skill"
+  fi
+done
+
+# v0.2: bun build --compile binaries here
+# if command -v bun >/dev/null 2>&1; then
+#   log "==> Building CLI binaries"
+#   (cd "$JARVIS_DIR" && bun install --silent && bun run build)
+# fi
+
+# Make bin scripts executable
+chmod +x "$JARVIS_DIR"/bin/* 2>/dev/null || true
+
+log ""
+log "==> Setup complete."
+log ""
+log "    Skills installed:"
+log "      /jarvis        - main entry point"
+log "      /jarvis-init   - bootstrap a new project"
+log "      /jarvis-add-*  - add features (auth, ai, payments, ...)"
+log "      /jarvis-deploy - deploy to AWS"
+log "      /jarvis-doctor - passive health check"
+log "      /jarvis-eject  - remove Jarvis, keep the app"
+log ""
+log "    Next: open Claude Code and run /jarvis init"
+log ""

@@ -1,0 +1,38 @@
+{
+  "name": "jarvis",
+  "version": "0.0.1",
+  "description": "Jarvis - AI cloud architect. From blank AWS account to deployed full-stack app in under 30 minutes. AWS-native, multi-agent, no lock-in.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andrewuta99-coder/jarvis.git"
+  },
+  "homepage": "https://github.com/andrewuta99-coder/jarvis",
+  "author": "Andrew Nguyen",
+  "bin": {
+    "jarvis": "./bin/jarvis"
+  },
+  "scripts": {
+    "build": "echo 'TODO: bun build --compile bin/jarvis.ts --outfile bin/jarvis'",
+    "test": "echo 'TODO: bun test'",
+    "dev": "echo 'TODO: bun run bin/jarvis.ts'",
+    "gen:skill-docs": "echo 'TODO: bun run scripts/gen-skill-docs.ts'",
+    "setup": "./setup"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "keywords": [
+    "aws",
+    "terraform",
+    "claude-code",
+    "ai-agent",
+    "scaffold",
+    "fullstack",
+    "iac",
+    "cli",
+    "openclaw",
+    "multi-agent"
+  ]
+}

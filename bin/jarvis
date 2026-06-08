@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Jarvis CLI — v0 stub. The real CLI will be a bun-compiled binary.
+# For now this is a thin dispatcher that the skill markdown shells out to.
+
+set -e
+
+JARVIS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION=$(cat "$JARVIS_DIR/VERSION" 2>/dev/null || echo "0.0.0")
+
+case "${1:-}" in
+  --version|-v|version)
+    echo "jarvis $VERSION"
+    ;;
+  --help|-h|help|"")
+    cat <<EOF
+Jarvis $VERSION — AI cloud architect for AWS
+
+Usage: jarvis <command> [args]
+
+Commands (will be invoked by Claude Code skills):
+  init         Bootstrap a new project (interview + scaffold)
+  add <feat>   Add a feature (users, files, email, ai, payments, ...)
+  deploy       Build and deploy to AWS
+  rollback     Revert to previous deployment
+  doctor       Passive health check
+  cost         Explain current and projected AWS spend
+  eject        Remove Jarvis from this repo (keep the app)
+  upgrade      Self-update Jarvis to latest
+
+For interactive use, run skills in Claude Code:
+  /jarvis init
+  /jarvis add-users
+  /jarvis deploy
+
+EOF
+    ;;
+  *)
+    echo "jarvis: command '$1' not yet implemented (v0 scaffold)" >&2
+    echo "Use Claude Code skills: /jarvis init, /jarvis add-users, etc." >&2
+    exit 1
+    ;;
+esac
