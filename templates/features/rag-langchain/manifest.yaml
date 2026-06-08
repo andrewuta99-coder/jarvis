@@ -1,35 +1,27 @@
 feature: rag-langchain
-version: 0.0.1
-status: stub-for-v0.0.3
+version: 0.0.3
 specialist: jarvis-rag
 description: |
-  LangChain-flavored RAG using Bedrock as the LLM + embeddings provider.
-  Alternative to the default AI feature's boto3 invoke_agent path. Pick this
-  when you want LangChain's retriever/chain composition for multi-step
-  reasoning, custom tools, or complex prompt templates.
+  LangChain-flavored RAG over Bedrock. Replaces the default ai/service.py
+  with a LangChain LCEL chain. Use when you want LangSmith observability
+  or multi-step chain composition more elaborate than a single agent invoke.
 
-  v0.0.3 status: scaffold only.
+requires_feature: ai
 
-stack_choice_when:
-  default_ai_feature_when:
-    - simple chat with KB-aware responses
-    - lowest dep footprint (just boto3)
-    - want Bedrock's native streaming + agent traces
-  this_feature_when:
-    - complex chain composition (rerank, multi-hop)
-    - want LangSmith observability
-    - already have LangChain code to integrate
+inputs:
+  required: [region, app_name, agent_id, kb_id]
+  optional:
+    langsmith_enabled: "false"
 
-key_patterns:
-  - langchain_aws.ChatBedrockConverse as the LLM (Bedrock-native, supports
-    Nova + Claude + Titan via the same interface)
-  - langchain_aws.AmazonKnowledgeBasesRetriever wrapping Bedrock KB
-  - RAG chain via LCEL — retriever | prompt | llm | output_parser
-  - Pydantic structured output for typed responses
+outputs: [chain_provider]
 
-source_files_planned:
-  - python/service.py.tmpl   (replaces ai/python/service.py at install time)
-  - python/chains.py.tmpl    (chain definitions)
-  - python/retrievers.py.tmpl
-  - python/tracing.py.tmpl   (optional LangSmith hook)
-  - requirements_addendum.txt.tmpl  (langchain-aws, langchain-core)
+writes_glob: [backend/ai_langchain/**/*]
+
+files:
+  always:
+    - { src: python/__init__.py.tmpl,        dst: backend/ai_langchain/__init__.py }
+    - { src: python/service.py.tmpl,         dst: backend/ai_langchain/service.py }
+    - { src: python/chains.py.tmpl,          dst: backend/ai_langchain/chains.py }
+    - { src: python/retrievers.py.tmpl,      dst: backend/ai_langchain/retrievers.py }
+    - { src: python/tracing.py.tmpl,         dst: backend/ai_langchain/tracing.py }
+    - { src: requirements_addendum.txt.tmpl, dst: backend/requirements-langchain.txt }

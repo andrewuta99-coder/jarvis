@@ -1,31 +1,29 @@
 feature: gpu
-version: 0.0.1
-status: stub-for-v0.0.3
+version: 0.0.3
 specialist: jarvis-gpu
 description: |
-  Scale-to-zero EC2 Spot GPU capacity provider for ECS, lifted from the
-  CloudMortgage iac/ecs-gpu pattern. Min=0, Max=2, desired=0 ASG. $0/hr
-  idle, ~$0.45/hr g5/g6 spot only when tasks run.
+  Scale-to-zero EC2 Spot GPU capacity provider for ECS. Lifted from the
+  CloudMortgage iac/ecs-gpu pattern. ASG min=0, max=2, desired=0 →
+  $0/hr when idle, ~$0.45/hr g5.2xlarge spot only when tasks run.
 
-  v0.0.3 status: scaffold only. Full template files arrive when /jarvis-add-gpu
-  is built. Pattern is fully documented at docs/patterns/gpu-scale-to-zero.md.
+inputs:
+  required: [region, app_name, account_id]
+  optional:
+    instance_type: g5.2xlarge
+    max_size: 2
 
-key_patterns:
-  - Amazon Linux 2023 AMI (glibc 2.34, GCC 11+) — REQUIRED for manylinux_2_28
-    wheel compatibility (numpy/pytorch). AL2 (glibc 2.26) fails uv sync.
-  - ECS managed scaling, target_capacity=100, scales ASG up only when a
-    task is queued, down to zero when no tasks running on this provider.
-  - Cluster association via ONE-TIME manual aws ecs put-cluster-capacity-providers
-    after first apply — Terraform does not manage the cluster's capacity-
-    provider list to avoid stepping on FARGATE/FARGATE_SPOT.
-  - GPU registration race fix: user_data polls nvidia-smi before ECS agent
-    registers the host, so GPU resources show up in the cluster's stringSet.
-  - ECS_ENABLE_SPOT_INSTANCE_DRAINING=true on the agent — graceful drain
-    on Spot interruption notices (2-minute warning).
+outputs: [capacity_provider_name, asg_arn, instance_role_arn]
 
-source_files_planned:
-  - iac/ec2_spot_asg.tf.tmpl
-  - iac/launch_template.tf.tmpl
-  - iac/ecs_capacity_provider.tf.tmpl
-  - iac/iam_instance_role.tf.tmpl
-  - iac/cloudwatch_alarms.tf.tmpl
+writes_glob: [iac/gpu/**/*, scripts/cluster_association.sh]
+
+files:
+  always:
+    - { src: iac/variables.tf.tmpl,            dst: iac/gpu/variables.tf }
+    - { src: iac/launch_template.tf.tmpl,      dst: iac/gpu/launch_template.tf }
+    - { src: iac/asg.tf.tmpl,                  dst: iac/gpu/asg.tf }
+    - { src: iac/capacity_provider.tf.tmpl,    dst: iac/gpu/capacity_provider.tf }
+    - { src: iac/iam_instance_role.tf.tmpl,    dst: iac/gpu/iam_instance_role.tf }
+    - { src: iac/cloudwatch_alarms.tf.tmpl,    dst: iac/gpu/cloudwatch_alarms.tf }
+    - { src: iac/outputs.tf.tmpl,              dst: iac/gpu/outputs.tf }
+    - { src: scripts/user_data.sh.tmpl,        dst: iac/gpu/user_data.sh }
+    - { src: scripts/cluster_association.sh.tmpl, dst: scripts/cluster_association.sh }

@@ -1,42 +1,32 @@
 feature: pipeline
-version: 0.0.1
-status: stub-for-v0.0.3
+version: 0.0.3
 specialist: jarvis-pipeline
 description: |
-  Step Functions + S3 inbox + Lambda orchestrators for heavy AI / ML
-  workloads. Lifted from CloudMortgage's Alpamayo pipeline. Use this when
-  the AI feature's synchronous chat is not enough — long-running closed-loop
-  experiments, batch document processing, multi-step orchestration.
+  Step Functions + S3 inbox + Lambda orchestrators. Lifted from
+  CloudMortgage's Alpamayo pipeline. S3 inbox/claimed/done/failed/rejected
+  protocol. STOP kill switch. Tier gating (Ultra/Enterprise) with
+  rejection.json + email notify.
 
-  v0.0.3 status: scaffold only. Full templates arrive with /jarvis-add-pipeline.
+inputs:
+  required: [region, app_name, account_id, task_role_arn]
+  optional:
+    allowed_tiers: "ultra,enterprise"
+    notify_email: ""
 
-key_patterns:
-  - **S3 inbox protocol**: alpamayo-inbox/{queued,claimed/<run_id>,done,failed,
-    rejected,needs_l40s}. State transitions via S3 copy_object (atomic).
-  - **Tier gating**: claim Lambda checks subscription tier (Ultra/Enterprise
-    by default), rejects with explanatory rejection.json + SES notification.
-  - **STOP kill switch**: Lambda checks for alpamayo-inbox/STOP key before
-    claiming. Lets operator pause the pipeline without state machine changes.
-  - **Step Functions Catch -> FailureHandler**: every Lambda errors flow to
-    a single failure handler that moves the claim to failed/ with diagnostic
-    context and emails the responsible user.
-  - **Autonomous proposer**: when inbox empty, optional plan Lambda generates
-    new experiments via Gemini / Claude / etc. and writes back to inbox.
-    Pipeline self-sustains for unattended exploration.
-  - **closed_loop_enabled YAML gate**: Choice routing in the state machine
-    reads a field from the proposal YAML to decide whether to enter the
-    GPU-heavy closed-loop branch vs the standard branch.
+outputs: [state_machine_arn, inbox_bucket, claim_lambda_arn]
 
-source_files_planned:
-  - iac/stepfunctions_state_machine.tf.tmpl
-  - iac/lambda_claim.tf.tmpl
-  - iac/lambda_plan.tf.tmpl
-  - iac/lambda_gpu_ready.tf.tmpl
-  - iac/lambda_finalise.tf.tmpl
-  - iac/lambda_failure.tf.tmpl
-  - lambda/claim/handler.py.tmpl
-  - lambda/plan/handler.py.tmpl
-  - lambda/gpu_ready/handler.py.tmpl
-  - lambda/finalise/handler.py.tmpl
-  - lambda/failure/handler.py.tmpl
-  - iac/s3_inbox_bucket.tf.tmpl
+writes_glob: [iac/pipeline/**/*, lambda/pipeline_*/**/*]
+
+files:
+  always:
+    - { src: iac/variables.tf.tmpl,            dst: iac/pipeline/variables.tf }
+    - { src: iac/inbox_bucket.tf.tmpl,         dst: iac/pipeline/inbox_bucket.tf }
+    - { src: iac/state_machine.tf.tmpl,        dst: iac/pipeline/state_machine.tf }
+    - { src: iac/lambdas.tf.tmpl,              dst: iac/pipeline/lambdas.tf }
+    - { src: iac/iam.tf.tmpl,                  dst: iac/pipeline/iam.tf }
+    - { src: iac/outputs.tf.tmpl,              dst: iac/pipeline/outputs.tf }
+    - { src: lambda/claim/handler.py.tmpl,     dst: lambda/pipeline_claim/handler.py }
+    - { src: lambda/plan/handler.py.tmpl,      dst: lambda/pipeline_plan/handler.py }
+    - { src: lambda/gpu_ready/handler.py.tmpl, dst: lambda/pipeline_gpu_ready/handler.py }
+    - { src: lambda/finalise/handler.py.tmpl,  dst: lambda/pipeline_finalise/handler.py }
+    - { src: lambda/failure/handler.py.tmpl,   dst: lambda/pipeline_failure/handler.py }

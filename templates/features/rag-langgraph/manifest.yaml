@@ -1,35 +1,25 @@
 feature: rag-langgraph
-version: 0.0.1
-status: stub-for-v0.0.3
+version: 0.0.3
 specialist: jarvis-rag
 description: |
-  LangGraph state machine on top of LangChain + Bedrock. Use this when your
-  agent needs explicit state, looping, conditional routing, human-in-the-loop
-  approval gates, or multi-tool reasoning more elaborate than a single chain.
+  LangGraph state-machine RAG. Use when reasoning needs explicit state,
+  conditional routing, human-in-the-loop approval gates, or long-running
+  flows with checkpoints. Persists graph state to DynamoDB.
 
-  v0.0.3 status: scaffold only.
+requires_feature: ai
 
-stack_choice_when:
-  this_feature_when:
-    - agent reasoning with explicit state graph
-    - conditional routing (Choose A or B based on output)
-    - long-running with checkpoints (LangGraph's persistence layer over DDB)
-    - human approval steps mid-flow
-    - want clear state-machine inspection
+inputs:
+  required: [region, app_name, agent_id, kb_id, table_chat_threads_name]
 
-key_patterns:
-  - StateGraph with typed Pydantic state
-  - DynamoDB checkpointer (we already have the chat_threads table; LangGraph
-    persistence saves graph state per thread_id)
-  - Conditional edges driven by tool-output classification
-  - Subgraphs for nested reasoning (e.g., one subgraph per step of a doc
-    processing pipeline)
-  - LangGraph Studio for visual debugging in dev
+outputs: [graph_provider]
 
-source_files_planned:
-  - python/service.py.tmpl
-  - python/graph.py.tmpl       (StateGraph definition)
-  - python/nodes.py.tmpl       (individual nodes)
-  - python/state.py.tmpl       (Pydantic state model)
-  - python/checkpointer.py.tmpl (DDB-backed)
-  - requirements_addendum.txt.tmpl
+writes_glob: [backend/ai_langgraph/**/*]
+
+files:
+  always:
+    - { src: python/__init__.py.tmpl,        dst: backend/ai_langgraph/__init__.py }
+    - { src: python/service.py.tmpl,         dst: backend/ai_langgraph/service.py }
+    - { src: python/graph.py.tmpl,           dst: backend/ai_langgraph/graph.py }
+    - { src: python/state.py.tmpl,           dst: backend/ai_langgraph/state.py }
+    - { src: python/checkpointer.py.tmpl,    dst: backend/ai_langgraph/checkpointer.py }
+    - { src: requirements_addendum.txt.tmpl, dst: backend/requirements-langgraph.txt }
