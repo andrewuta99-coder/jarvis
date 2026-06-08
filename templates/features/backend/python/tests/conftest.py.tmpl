@@ -1,0 +1,63 @@
+"""
+Shared pytest fixtures. Mocks DynamoDB, Secrets, SES with moto so tests
+never touch real AWS.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import boto3
+import pytest
+from moto import mock_aws
+
+# Ensure backend/ is on sys.path
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+
+@pytest.fixture(autouse=True)
+def aws_env(monkeypatch):
+    """Fake AWS creds so boto3 doesn't try to use the real profile."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("APP_NAME", "test-app")
+
+
+@pytest.fixture
+def ddb(aws_env):
+    """Mocked DynamoDB with the standard Jarvis tables pre-created."""
+    with mock_aws():
+        client = boto3.client("dynamodb")
+        # Create the tables this app expects (kept in sync with iac/dynamodb)
+        for name, hash_key, range_key in [
+            ("test-app-users-v2", "tenantId", "email"),
+            ("test-app-sessions", "session_id", None),
+            ("test-app-signup-codes", "email", "record_type"),
+            ("test-app-idempotency", "request_id", None),
+        ]:
+            schema = {"AttributeName": hash_key, "KeyType": "HASH"}
+            attrs = [{"AttributeName": hash_key, "AttributeType": "S"}]
+            key_schema = [schema]
+            if range_key:
+                key_schema.append({"AttributeName": range_key, "KeyType": "RANGE"})
+                attrs.append({"AttributeName": range_key, "AttributeType": "S"})
+            client.create_table(
+                TableName=name,
+                KeySchema=key_schema,
+                AttributeDefinitions=attrs,
+                BillingMode="PAY_PER_REQUEST",
+            )
+        yield boto3.resource("dynamodb")
+
+
+@pytest.fixture
+def client(ddb):
+    """FastAPI TestClient with DDB mocked."""
+    from fastapi.testclient import TestClient
+    import main as main_module
+    return TestClient(main_module.app)

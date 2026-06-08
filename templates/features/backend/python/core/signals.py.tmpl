@@ -1,0 +1,76 @@
+"""
+Signal handling for graceful ECS shutdown.
+
+The 2026-12-22 CloudMortgage incident: 22 orphan ECS tasks accumulated
+because workers didn't respond to SIGTERM. Hit account vCPU quota,
+deploys failed. This module is the permanent fix.
+
+Behavior:
+  - SIGTERM/SIGINT: stop accepting new requests, drain in-flight ones for
+    up to MAX_DRAIN_SECONDS, then exit.
+  - SIGALRM: hard-timeout backstop. If the task is still running after
+    MAX_TASK_RUNTIME_SECONDS, force-exit. Prevents Step Functions
+    timeouts from leaving orphan tasks behind.
+
+Exit codes (read by `aws ecs describe-tasks`):
+  0    success
+  1    failure
+  124  timeout exceeded (SIGALRM fired)
+  130  terminated by SIGTERM
+"""
+from __future__ import annotations
+
+import logging
+import os
+import signal
+import sys
+import threading
+import time
+
+logger = logging.getLogger(__name__)
+
+MAX_DRAIN_SECONDS = int(os.environ.get("MAX_DRAIN_SECONDS", "25"))
+MAX_TASK_RUNTIME_SECONDS = int(os.environ.get("MAX_TASK_RUNTIME_SECONDS", "3600"))  # 1hr
+
+_shutdown_requested = threading.Event()
+_first_signal_time: float | None = None
+
+
+def shutdown_requested() -> bool:
+    return _shutdown_requested.is_set()
+
+
+def _signal_handler(signum: int, _frame) -> None:
+    global _first_signal_time
+    sig_name = signal.Signals(signum).name
+    now = time.time()
+
+    if _first_signal_time is None:
+        _first_signal_time = now
+        logger.warning("signal_received_starting_drain", extra={"signal": sig_name, "drain_seconds": MAX_DRAIN_SECONDS})
+        _shutdown_requested.set()
+        # Schedule hard exit after drain window
+        threading.Timer(MAX_DRAIN_SECONDS, lambda: sys.exit(130)).start()
+        return
+
+    # Second signal → exit immediately
+    elapsed = now - _first_signal_time
+    logger.error("signal_received_force_exit", extra={"signal": sig_name, "elapsed": elapsed})
+    sys.exit(130)
+
+
+def _timeout_handler(_signum: int, _frame) -> None:
+    logger.error("task_runtime_exceeded", extra={"max_seconds": MAX_TASK_RUNTIME_SECONDS})
+    sys.exit(124)
+
+
+def install_signal_handlers() -> None:
+    """Call once at app startup. Idempotent."""
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(MAX_TASK_RUNTIME_SECONDS)
+    logger.info("signal_handlers_installed", extra={
+        "max_drain_seconds": MAX_DRAIN_SECONDS,
+        "max_task_runtime_seconds": MAX_TASK_RUNTIME_SECONDS,
+    })

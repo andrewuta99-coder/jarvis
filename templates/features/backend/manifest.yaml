@@ -1,0 +1,36 @@
+feature: backend
+version: 0.0.1
+specialist: jarvis-backend
+description: |
+  FastAPI service skeleton with the production patterns from CloudMortgage:
+  SIGTERM + SIGALRM handlers (the 2026-12-22 orphan-task fix), tenant
+  middleware, lazy boto3 clients, structured JSON logs, secrets cached on
+  startup, health check at /api/health.
+
+inputs:
+  required: [region, app_name, table_names, task_role_name, task_execution_role_arn, ecs_cluster_name, ecr_repo_url, security_group_app_id, private_subnet_ids, target_group_app_arn]
+
+outputs: [backend_image_tag, ecs_service_arn, ecs_task_definition_arn]
+
+files:
+  always:
+    - { src: python/main.py.tmpl,                    dst: backend/main.py }
+    - { src: python/Dockerfile.tmpl,                 dst: backend/Dockerfile }
+    - { src: python/requirements.txt.tmpl,           dst: backend/requirements.txt }
+    - { src: python/requirements-dev.txt.tmpl,       dst: backend/requirements-dev.txt }
+    - { src: python/core/__init__.py.tmpl,           dst: backend/core/__init__.py }
+    - { src: python/core/dynamodb.py.tmpl,           dst: backend/core/dynamodb.py }
+    - { src: python/core/secrets.py.tmpl,            dst: backend/core/secrets.py }
+    - { src: python/core/signals.py.tmpl,            dst: backend/core/signals.py }
+    - { src: python/core/logging_config.py.tmpl,     dst: backend/core/logging_config.py }
+    - { src: python/core/auth_middleware.py.tmpl,    dst: backend/core/auth_middleware.py }
+    - { src: python/core/errors.py.tmpl,             dst: backend/core/errors.py }
+    - { src: python/tests/conftest.py.tmpl,          dst: backend/tests/conftest.py }
+    - { src: python/tests/test_health.py.tmpl,       dst: backend/tests/test_health.py }
+    - { src: python/pytest.ini.tmpl,                 dst: backend/pytest.ini }
+    - { src: python/.pre-commit-config.yaml.tmpl,    dst: .pre-commit-config.yaml }
+    - { src: python/pyproject.toml.tmpl,             dst: backend/pyproject.toml }
+    - { src: iac/ecs_task_definition.tf.tmpl,        dst: iac/ecs/task_definition.tf }
+    - { src: iac/ecs_service.tf.tmpl,                dst: iac/ecs/service.tf }
+    - { src: iac/variables.tf.tmpl,                  dst: iac/ecs/variables.tf }
+    - { src: iac/outputs.tf.tmpl,                    dst: iac/ecs/outputs.tf }

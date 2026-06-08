@@ -1,0 +1,36 @@
+"""
+Lazy, process-wide DynamoDB client.
+
+Pattern: a SINGLE boto3 Resource per process, lazy-initialized on first use.
+Re-instantiating per request is the #1 cause of slow Python on AWS.
+"""
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+
+import boto3
+
+REGION = os.environ.get("AWS_REGION", "{{REGION}}")
+
+
+@lru_cache(maxsize=1)
+def resource():
+    """Process-wide DynamoDB Resource. Reuse across all requests."""
+    return boto3.resource("dynamodb", region_name=REGION)
+
+
+def table(name: str):
+    """Get a DDB Table object by logical name (no app_name prefix)."""
+    return resource().Table(name)
+
+
+# Convenience: pre-bind the standard tables. Feature code imports these.
+def users_table():           return table(os.environ.get("USERS_TABLE", "{{APP_NAME}}-users-v2"))
+def sessions_table():        return table(os.environ.get("SESSIONS_TABLE", "{{APP_NAME}}-sessions"))
+def signup_codes_table():    return table(os.environ.get("SIGNUP_CODES_TABLE", "{{APP_NAME}}-signup-codes"))
+def chat_threads_table():    return table(os.environ.get("CHAT_THREADS_TABLE", "{{APP_NAME}}-chat-threads"))
+def chat_messages_table():   return table(os.environ.get("CHAT_MESSAGES_TABLE", "{{APP_NAME}}-chat-messages"))
+def customers_table():       return table(os.environ.get("CUSTOMERS_TABLE", "{{APP_NAME}}-customers"))
+def subscriptions_table():   return table(os.environ.get("SUBSCRIPTIONS_TABLE", "{{APP_NAME}}-subscriptions"))
+def idempotency_table():     return table(os.environ.get("IDEMPOTENCY_TABLE", "{{APP_NAME}}-idempotency"))

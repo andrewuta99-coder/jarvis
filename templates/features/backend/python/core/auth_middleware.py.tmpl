@@ -1,0 +1,84 @@
+"""
+JWT-based auth middleware. Extracts user + tenantId from Authorization
+header, attaches to request.state. Every protected route reads from there.
+
+Tenant isolation invariant: every DDB query MUST be scoped by request.state.tenant_id.
+Code-review for any GetItem/Query that doesn't pass tenantId — it's almost
+certainly a leak across tenants.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from typing import Annotated
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+
+from core import secrets as secrets_module
+
+logger = logging.getLogger(__name__)
+
+JWT_ALGORITHM = "HS256"
+JWT_SECRET_NAME = os.environ.get("JWT_SECRET_NAME", "jwt")
+DEFAULT_TENANT = os.environ.get("DEFAULT_TENANT", "{{APP_NAME}}")
+
+bearer = HTTPBearer(auto_error=False)
+
+
+class AuthUser:
+    __slots__ = ("user_id", "email", "tenant_id", "claims")
+
+    def __init__(self, user_id: str, email: str, tenant_id: str, claims: dict):
+        self.user_id = user_id
+        self.email = email
+        self.tenant_id = tenant_id
+        self.claims = claims
+
+    def __repr__(self) -> str:
+        return f"AuthUser(user_id={self.user_id!r}, tenant={self.tenant_id!r})"
+
+
+def _jwt_secret() -> str:
+    sec = secrets_module.get(JWT_SECRET_NAME)
+    if isinstance(sec, dict):
+        return sec.get("secret_key") or ""
+    return sec or ""
+
+
+async def require_user(
+    request: Request,
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+) -> AuthUser:
+    if creds is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing auth")
+
+    try:
+        claims = jwt.decode(creds.credentials, _jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except JWTError as exc:
+        logger.warning("jwt_decode_failed", extra={"error": str(exc)})
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+
+    user_id = claims.get("sub")
+    email = claims.get("email")
+    tenant_id = claims.get("tenant_id") or DEFAULT_TENANT
+    if not user_id or not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="malformed token")
+
+    user = AuthUser(user_id=user_id, email=email, tenant_id=tenant_id, claims=claims)
+    request.state.user = user
+    request.state.tenant_id = tenant_id
+    return user
+
+
+async def optional_user(
+    request: Request,
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+) -> AuthUser | None:
+    if creds is None:
+        return None
+    try:
+        return await require_user(request, creds)
+    except HTTPException:
+        return None

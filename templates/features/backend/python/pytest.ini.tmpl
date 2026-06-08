@@ -1,0 +1,8 @@
+[pytest]
+testpaths = tests
+asyncio_mode = auto
+addopts = -q --strict-markers --tb=short
+markers =
+    unit: fast unit tests (default)
+    integration: hits real AWS or external services
+    slow: takes > 5 seconds
