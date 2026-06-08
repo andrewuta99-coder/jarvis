@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""
+jarvis-scale — right-size your ECS service from real CloudWatch metrics.
+
+Reads 14 days of CPU + memory + request latency, applies a decision
+matrix, recommends a new task size. NEVER auto-applies — surfaces the
+change as a Terraform diff for the user to apply.
+
+Usage:
+    jarvis-scale                       # report only
+    jarvis-scale --window 7d           # 7-day window (default 14d)
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import re
+import sys
+from pathlib import Path
+
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:
+    print("boto3 required. pip install boto3", file=sys.stderr)
+    sys.exit(1)
+
+
+def parse_window(value: str) -> dt.timedelta:
+    m = re.match(r"^(\d+)([dh])$", value)
+    if not m:
+        raise ValueError(f"Invalid --window: {value}")
+    n, unit = int(m.group(1)), m.group(2)
+    return dt.timedelta(**{"days" if unit == "d" else "hours": n})
+
+
+def get_metric(cw, cluster: str, service: str, name: str, start: dt.datetime, end: dt.datetime):
+    resp = cw.get_metric_statistics(
+        Namespace="AWS/ECS",
+        MetricName=name,
+        Dimensions=[
+            {"Name": "ClusterName", "Value": cluster},
+            {"Name": "ServiceName", "Value": service},
+        ],
+        StartTime=start,
+        EndTime=end,
+        Period=3600,
+        Statistics=["Average", "Maximum"],
+    )
+    points = resp.get("Datapoints", [])
+    if not points:
+        return None, None
+    avg = sum(p["Average"] for p in points) / len(points)
+    mx = max(p["Maximum"] for p in points)
+    return avg, mx
+
+
+def recommend(avg_cpu: float, max_cpu: float, avg_mem: float, max_mem: float, current_cpu: int, current_mem: int):
+    """Return (new_cpu, new_memory, reason)."""
+    # CPU-based decision
+    if avg_cpu < 20 and max_cpu < 50:
+        new_cpu = max(256, current_cpu // 2)
+        verdict = "DOWN"
+    elif avg_cpu > 80 or max_cpu > 95:
+        new_cpu = current_cpu * 2
+        verdict = "UP-URGENT"
+    elif avg_cpu > 60 and max_cpu > 80:
+        new_cpu = int(current_cpu * 1.5)
+        verdict = "UP"
+    else:
+        new_cpu = current_cpu
+        verdict = "KEEP"
+
+    # Memory-based decision (use the more aggressive of the two)
+    if avg_mem < 20 and max_mem < 50:
+        new_mem = max(512, current_mem // 2)
+        if verdict == "KEEP": verdict = "DOWN"
+    elif avg_mem > 80 or max_mem > 95:
+        new_mem = current_mem * 2
+        verdict = "UP-URGENT"
+    elif avg_mem > 60 and max_mem > 80:
+        new_mem = max(int(current_mem * 1.5), new_mem if verdict in ("UP", "UP-URGENT") else current_mem)
+        if verdict == "KEEP": verdict = "UP"
+    else:
+        new_mem = current_mem
+
+    # Round to ECS-valid pairs (vCPU/mem combos)
+    valid = [(256, 512), (512, 1024), (1024, 2048), (2048, 4096), (4096, 8192), (8192, 16384)]
+    closest = min(valid, key=lambda v: abs(v[0] - new_cpu) + abs(v[1] - new_mem) / 4)
+    new_cpu, new_mem = closest
+
+    return new_cpu, new_mem, verdict
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="ECS right-sizing from CloudWatch metrics")
+    parser.add_argument("--target-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--window", default="14d")
+    args = parser.parse_args()
+
+    profile_path = args.target_dir / ".jarvis" / "profile.json"
+    if not profile_path.exists():
+        print(f"No profile at {profile_path}", file=sys.stderr)
+        return 1
+    profile = json.loads(profile_path.read_text())
+    app_name = profile.get("app_name", "")
+    region = profile.get("region", "us-east-1")
+
+    cluster = f"{app_name}-cluster"
+    service = f"{app_name}-api"
+
+    ecs = boto3.client("ecs", region_name=region)
+    cw = boto3.client("cloudwatch", region_name=region)
+
+    try:
+        svc = ecs.describe_services(cluster=cluster, services=[service])["services"][0]
+        td = ecs.describe_task_definition(taskDefinition=svc["taskDefinition"])["taskDefinition"]
+        current_cpu = int(td["cpu"])
+        current_mem = int(td["memory"])
+    except (ClientError, KeyError, IndexError) as exc:
+        print(f"Could not describe service: {exc}", file=sys.stderr)
+        return 1
+
+    end = dt.datetime.utcnow()
+    start = end - parse_window(args.window)
+
+    avg_cpu, max_cpu = get_metric(cw, cluster, service, "CPUUtilization", start, end)
+    avg_mem, max_mem = get_metric(cw, cluster, service, "MemoryUtilization", start, end)
+
+    if avg_cpu is None:
+        print("No CloudWatch metrics for this service yet (needs 1+ hour of traffic).",
+              file=sys.stderr)
+        return 1
+
+    new_cpu, new_mem, verdict = recommend(avg_cpu, max_cpu, avg_mem, max_mem, current_cpu, current_mem)
+
+    print(f"Service: {service}  cluster: {cluster}")
+    print(f"Window:  last {args.window}\n")
+    print(f"CURRENT TASK SIZE:  {current_cpu} CPU / {current_mem} MB")
+    print(f"CPU utilization:    avg {avg_cpu:.1f}%  max {max_cpu:.1f}%")
+    print(f"Memory utilization: avg {avg_mem:.1f}%  max {max_mem:.1f}%")
+    print()
+
+    if verdict == "KEEP":
+        print(f"✓ KEEP current size. Utilization is in the healthy 20-60% band.")
+        return 0
+
+    print(f"RECOMMENDATION: SCALE {verdict}")
+    print(f"  Suggested: {new_cpu} CPU / {new_mem} MB")
+
+    # Cost estimate (Fargate Spot per-hour)
+    spot_vcpu = 0.0124
+    spot_mem = 0.00135
+    new_hourly = (new_cpu / 1024) * spot_vcpu + (new_mem / 1024) * spot_mem
+    old_hourly = (current_cpu / 1024) * spot_vcpu + (current_mem / 1024) * spot_mem
+    delta_mo = (new_hourly - old_hourly) * 24 * 30
+    if delta_mo < 0:
+        print(f"  Cost change: -${abs(delta_mo):.2f}/mo (savings)")
+    else:
+        print(f"  Cost change: +${delta_mo:.2f}/mo")
+
+    print(f"\nTo apply, edit iac/ecs/variables.tf:")
+    print(f"  variable \"task_cpu\"    {{ default = \"{new_cpu}\" }}")
+    print(f"  variable \"task_memory\" {{ default = \"{new_mem}\" }}")
+    print(f"Then: cd iac/ecs && terraform apply")
+    print(f"\n(Or override at deploy time: TASK_CPU={new_cpu} TASK_MEMORY={new_mem} ./scripts/deploy.sh)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

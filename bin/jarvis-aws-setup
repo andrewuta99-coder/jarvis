@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""
+jarvis-aws-setup — get AWS credentials configured with the minimum questions.
+
+What it does in order:
+  1. Check if AWS CLI is installed; if not, print the one-liner install command.
+  2. Run `aws sts get-caller-identity` to see if creds already work.
+     If they do, print account + region and exit success.
+  3. If not, ask the THREE inputs needed:
+        - AWS access key ID  (paste, visible)
+        - AWS secret access key  (paste, masked)
+        - Default region  (default: us-east-1)
+     Write to ~/.aws/credentials + ~/.aws/config under [jarvis] profile.
+  4. Re-test. If working, optionally offer to set a billing alarm
+     (one yes/no — that's the only follow-up).
+
+Usage:
+    jarvis-aws-setup                       # interactive, smart-detect mode
+    jarvis-aws-setup --check               # just test creds, exit 0/1
+    jarvis-aws-setup --profile myprofile   # use a non-default profile name
+    jarvis-aws-setup --sso                 # walk through Identity Center setup
+"""
+from __future__ import annotations
+
+import argparse
+import configparser
+import getpass
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+AWS_DIR = Path.home() / ".aws"
+CREDS_PATH = AWS_DIR / "credentials"
+CONFIG_PATH = AWS_DIR / "config"
+
+
+def is_aws_cli_installed() -> bool:
+    return shutil.which("aws") is not None
+
+
+def install_instruction() -> str:
+    sysname = os.uname().sysname.lower() if hasattr(os, "uname") else "linux"
+    if "darwin" in sysname:
+        return "brew install awscli"
+    if "linux" in sysname:
+        return ("curl 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o awscliv2.zip && "
+                "unzip awscliv2.zip && sudo ./aws/install")
+    return "See https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+
+
+def test_creds(profile: str | None = None) -> dict | None:
+    """Run `aws sts get-caller-identity`. Returns parsed identity or None."""
+    cmd = ["aws", "sts", "get-caller-identity", "--output", "json"]
+    if profile:
+        cmd += ["--profile", profile]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    import json
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def current_region(profile: str | None = None) -> str | None:
+    cmd = ["aws", "configure", "get", "region"]
+    if profile:
+        cmd += ["--profile", profile]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    return proc.stdout.strip() or None
+
+
+def write_credentials(*, access_key: str, secret_key: str, region: str, profile: str):
+    AWS_DIR.mkdir(exist_ok=True, mode=0o700)
+
+    creds = configparser.ConfigParser()
+    if CREDS_PATH.exists():
+        creds.read(CREDS_PATH)
+    creds[profile] = {
+        "aws_access_key_id": access_key,
+        "aws_secret_access_key": secret_key,
+    }
+    with CREDS_PATH.open("w") as f:
+        creds.write(f)
+    CREDS_PATH.chmod(0o600)
+
+    config = configparser.ConfigParser()
+    if CONFIG_PATH.exists():
+        config.read(CONFIG_PATH)
+    config_section = "default" if profile == "default" else f"profile {profile}"
+    config[config_section] = {
+        "region": region,
+        "output": "json",
+    }
+    with CONFIG_PATH.open("w") as f:
+        config.write(f)
+    CONFIG_PATH.chmod(0o600)
+
+
+def set_billing_alarm(region: str, threshold_usd: int = 50) -> bool:
+    """Create a basic billing alarm in us-east-1 (where billing metrics live).
+    Returns True on success, False on any failure (non-blocking)."""
+    # Billing metrics ONLY exist in us-east-1.
+    cmd = [
+        "aws", "cloudwatch", "put-metric-alarm",
+        "--region", "us-east-1",
+        "--alarm-name", f"jarvis-monthly-bill-over-{threshold_usd}",
+        "--alarm-description", f"Monthly AWS bill exceeded ${threshold_usd}",
+        "--metric-name", "EstimatedCharges",
+        "--namespace", "AWS/Billing",
+        "--statistic", "Maximum",
+        "--period", "21600",  # 6 hours
+        "--evaluation-periods", "1",
+        "--threshold", str(threshold_usd),
+        "--comparison-operator", "GreaterThanThreshold",
+        "--dimensions", "Name=Currency,Value=USD",
+        "--treat-missing-data", "notBreaching",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    return proc.returncode == 0
+
+
+def sso_flow() -> int:
+    """Identity Center / SSO setup — defer to native `aws configure sso`."""
+    print()
+    print("Launching `aws configure sso` (AWS's interactive Identity Center setup).")
+    print("You'll need: SSO start URL, SSO region, and your AWS Identity Center account.")
+    print()
+    return subprocess.run(["aws", "configure", "sso"]).returncode
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Get AWS credentials configured with minimum questions.")
+    parser.add_argument("--check", action="store_true",
+                        help="Just test current creds, exit 0 if working, 1 otherwise")
+    parser.add_argument("--profile", default="default",
+                        help="Profile name to write under (default: 'default')")
+    parser.add_argument("--sso", action="store_true",
+                        help="Use Identity Center / SSO instead of access keys")
+    args = parser.parse_args()
+
+    # Step 1: AWS CLI installed?
+    if not is_aws_cli_installed():
+        print("AWS CLI is not installed.\n", file=sys.stderr)
+        print(f"Install with:\n  {install_instruction()}\n", file=sys.stderr)
+        print("Then re-run: jarvis-aws-setup", file=sys.stderr)
+        return 1
+
+    # Step 2: Already working?
+    identity = test_creds(args.profile if args.profile != "default" else None)
+    if identity:
+        region = current_region(args.profile if args.profile != "default" else None) or "us-east-1"
+        print("AWS credentials work.")
+        print(f"  Account:  {identity.get('Account')}")
+        print(f"  User:     {identity.get('Arn')}")
+        print(f"  Region:   {region}")
+        return 0
+
+    if args.check:
+        print("AWS credentials are not configured or not working.", file=sys.stderr)
+        return 1
+
+    if args.sso:
+        return sso_flow()
+
+    # Step 3: Walk the user through (3 inputs)
+    print("AWS credentials are not configured. Let's set them up.\n")
+    print("You'll need an Access Key from the AWS Console:")
+    print("  1. Go to https://console.aws.amazon.com/iam/home#/security_credentials")
+    print("  2. Create access key (pick 'CLI' as the use case)")
+    print("  3. Copy the Access Key ID and the Secret Access Key\n")
+
+    access_key = input("AWS Access Key ID:        ").strip()
+    if not access_key:
+        print("Empty key. Aborting.", file=sys.stderr)
+        return 1
+    secret_key = getpass.getpass("AWS Secret Access Key:    ").strip()
+    if not secret_key:
+        print("Empty secret. Aborting.", file=sys.stderr)
+        return 1
+    region_in = input("Default region [us-east-1]: ").strip() or "us-east-1"
+
+    write_credentials(
+        access_key=access_key,
+        secret_key=secret_key,
+        region=region_in,
+        profile=args.profile,
+    )
+    print(f"\nWrote credentials to {CREDS_PATH} under profile [{args.profile}].")
+
+    # Step 4: Re-test
+    identity = test_creds(args.profile if args.profile != "default" else None)
+    if not identity:
+        print("Credentials still don't work. Common causes:", file=sys.stderr)
+        print("  - Key was inactive in the console", file=sys.stderr)
+        print("  - Copy-paste introduced whitespace", file=sys.stderr)
+        print("  - System clock is more than 5 min off", file=sys.stderr)
+        return 1
+    print(f"Verified. Account: {identity.get('Account')}, Region: {region_in}")
+
+    # Step 5: Billing alarm (one yes/no)
+    print()
+    answer = input("Set a $50/mo billing alarm to avoid surprise bills? [Y/n] ").strip().lower()
+    if answer in ("", "y", "yes"):
+        if set_billing_alarm(region_in, threshold_usd=50):
+            print("Billing alarm created (threshold $50, us-east-1).")
+            print("  (Enable billing metrics in Account → Billing if alarm shows InsufficientData.)")
+        else:
+            print("Could not create billing alarm. You can set it later in CloudWatch.")
+
+    print("\nYou're set. Try: /jarvis-init")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

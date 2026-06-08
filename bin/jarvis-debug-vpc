@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""
+jarvis-debug-vpc — paste a Connect-timeout error, get a fix suggestion.
+
+The signature failure mode for missing VPC endpoints:
+    "Connect timeout on endpoint URL: <some-aws-service>.<region>.amazonaws.com"
+
+This tool reads an error you paste or pipe in, identifies the AWS service,
+and prints the exact `aws ec2 create-vpc-endpoint` command + the Terraform
+snippet to add to your iac/networking/ module.
+
+Usage:
+    jarvis-debug-vpc                              # interactive paste
+    jarvis-debug-vpc --error "Connect timeout..."  # pass as arg
+    echo "error..." | jarvis-debug-vpc             # pipe
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+# Known AWS service → VPC endpoint mapping
+SERVICE_MAP = {
+    "email": "com.amazonaws.{region}.email",
+    "ses":   "com.amazonaws.{region}.email",
+    "states": "com.amazonaws.{region}.states",
+    "bedrock-runtime":       "com.amazonaws.{region}.bedrock-runtime",
+    "bedrock-agent-runtime": "com.amazonaws.{region}.bedrock-agent-runtime",
+    "aoss": "com.amazonaws.{region}.aoss",
+    "secretsmanager": "com.amazonaws.{region}.secretsmanager",
+    "logs":           "com.amazonaws.{region}.logs",
+    "sts":            "com.amazonaws.{region}.sts",
+    "events":         "com.amazonaws.{region}.events",
+    "sns":            "com.amazonaws.{region}.sns",
+    "sqs":            "com.amazonaws.{region}.sqs",
+    "lambda":         "com.amazonaws.{region}.lambda",
+    "ecr.api":        "com.amazonaws.{region}.ecr.api",
+    "ecr.dkr":        "com.amazonaws.{region}.ecr.dkr",
+    "kms":            "com.amazonaws.{region}.kms",
+    "cloudwatch":     "com.amazonaws.{region}.monitoring",
+    "connect":        "com.amazonaws.{region}.connect",
+    "appconfig":      "com.amazonaws.{region}.appconfig",
+}
+
+
+def extract_service(error: str) -> tuple[str | None, str | None]:
+    """Try to find the AWS endpoint hostname in the error."""
+    # Pattern: https://<service>.<region>.amazonaws.com/
+    m = re.search(r"https?://([\w.-]+)\.([\w-]+)\.amazonaws\.com", error)
+    if m:
+        return m.group(1), m.group(2)
+    # Pattern: endpoint URL: "service.region.amazonaws.com"
+    m = re.search(r"endpoint URL:?\s*[\"']?([\w.-]+)\.([\w-]+)\.amazonaws\.com", error)
+    if m:
+        return m.group(1), m.group(2)
+    return None, None
+
+
+def suggest_fix(service: str, region: str) -> str:
+    if service not in SERVICE_MAP:
+        return f"""\
+Service '{service}' is not in the known VPC-endpoint map. Check if it
+supports VPC endpoints:
+    aws ec2 describe-vpc-endpoint-services --region {region} \\
+      --filters Name=service-name,Values=*{service}* \\
+      --query 'ServiceNames'
+
+If listed there, create the endpoint with the standard command pattern
+(see other services in this script for examples).
+"""
+
+    endpoint_name = SERVICE_MAP[service].format(region=region)
+    return f"""\
+Missing VPC endpoint for: {service}
+Endpoint service name:    {endpoint_name}
+
+═══════════════════════════════════════════════════════════════════
+ONE-OFF FIX (aws-cli, immediate):
+═══════════════════════════════════════════════════════════════════
+
+Read your VPC + subnet IDs from existing infra:
+
+    VPC_ID=$(aws ec2 describe-vpcs --region {region} \\
+        --filters 'Name=tag:ManagedBy,Values=Jarvis' \\
+        --query 'Vpcs[0].VpcId' --output text)
+    SUBNETS=$(aws ec2 describe-subnets --region {region} \\
+        --filters Name=vpc-id,Values=$VPC_ID Name=tag:Tier,Values=private \\
+        --query 'Subnets[*].SubnetId' --output text)
+    SG=$(aws ec2 describe-security-groups --region {region} \\
+        --filters Name=vpc-id,Values=$VPC_ID Name=tag:Name,Values=*vpce-sg \\
+        --query 'SecurityGroups[0].GroupId' --output text)
+
+Then create:
+
+    aws ec2 create-vpc-endpoint --region {region} \\
+        --vpc-id $VPC_ID \\
+        --service-name {endpoint_name} \\
+        --vpc-endpoint-type Interface \\
+        --subnet-ids $SUBNETS \\
+        --security-group-ids $SG \\
+        --private-dns-enabled
+
+═══════════════════════════════════════════════════════════════════
+PROPER FIX (Terraform, persistent):
+═══════════════════════════════════════════════════════════════════
+
+Add to iac/networking/vpc_endpoint_{service.replace('.', '_').replace('-', '_')}.tf:
+
+    resource "aws_vpc_endpoint" "{service.replace('.', '_').replace('-', '_')}" {{
+      vpc_id              = aws_vpc.main.id
+      service_name        = "{endpoint_name}"
+      vpc_endpoint_type   = "Interface"
+      subnet_ids          = aws_subnet.private[*].id
+      security_group_ids  = [aws_security_group.vpce.id]
+      private_dns_enabled = true
+
+      tags = merge(local.common_tags, {{ Name = "${{var.app_name}}-vpce-{service}" }})
+    }}
+
+Then:
+    cd iac/networking && terraform apply
+
+Cost: ~$7.30/mo for 2 AZs (interface VPC endpoint pricing).
+"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Diagnose VPC endpoint timeouts")
+    parser.add_argument("--error", help="Error text (if not provided, reads stdin)")
+    parser.add_argument("--target-dir", type=Path, default=Path.cwd())
+    args = parser.parse_args()
+
+    if args.error:
+        error = args.error
+    elif not sys.stdin.isatty():
+        error = sys.stdin.read()
+    else:
+        print("Paste the error (Ctrl-D when done):", file=sys.stderr)
+        error = sys.stdin.read()
+
+    if not error.strip():
+        print("No error text provided.", file=sys.stderr)
+        return 1
+
+    service, parsed_region = extract_service(error)
+    if not service:
+        print("Could not parse an AWS endpoint hostname from your error.", file=sys.stderr)
+        print("Looking for: 'https://<service>.<region>.amazonaws.com/' or", file=sys.stderr)
+        print("             'endpoint URL: <service>.<region>.amazonaws.com'", file=sys.stderr)
+        return 1
+
+    # Prefer the region from profile; fall back to parsed.
+    region = parsed_region
+    profile_path = args.target_dir / ".jarvis" / "profile.json"
+    if profile_path.exists():
+        profile = json.loads(profile_path.read_text())
+        region = profile.get("region", parsed_region)
+
+    print(suggest_fix(service, region))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

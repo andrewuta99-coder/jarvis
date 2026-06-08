@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""
+jarvis-canary — post-deploy monitoring loop with auto-rollback.
+
+Watches the live app for a configurable window (default 10 min) after a
+deploy. If error rate spikes or healthcheck fails, triggers automatic
+rollback to the previous task definition.
+
+Usage:
+    jarvis-canary                       # default: 10 min window
+    jarvis-canary --window 30m          # watch for 30 minutes
+    jarvis-canary --no-rollback         # alert only, don't roll back
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import time
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:
+    print("boto3 required. pip install boto3", file=sys.stderr)
+    sys.exit(1)
+
+
+def parse_window(value: str) -> int:
+    """30m, 1h → seconds"""
+    m = re.match(r"^(\d+)([smh])$", value)
+    if not m:
+        raise ValueError(f"Invalid --window: {value}")
+    n, unit = int(m.group(1)), m.group(2)
+    return n * {"s": 1, "m": 60, "h": 3600}[unit]
+
+
+def healthcheck(url: str) -> tuple[bool, str]:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return r.status == 200, f"HTTP {r.status}"
+    except Exception as exc:
+        return False, str(exc)[:80]
+
+
+def recent_error_count(logs, log_group: str, since: datetime) -> int:
+    try:
+        resp = logs.filter_log_events(
+            logGroupName=log_group,
+            startTime=int(since.timestamp() * 1000),
+            filterPattern='?ERROR ?Exception ?Traceback ?500',
+            limit=100,
+        )
+        return len(resp.get("events", []))
+    except ClientError:
+        return -1
+
+
+def rollback(ecs, cluster: str, service: str) -> bool:
+    """Roll back to the second-most-recent revision of the service's task family."""
+    try:
+        desc = ecs.describe_services(cluster=cluster, services=[service])["services"][0]
+        family = desc["taskDefinition"].rsplit(":", 1)[0]
+
+        # List the last 5 revisions, pick the one BEFORE the current
+        listed = ecs.list_task_definitions(
+            familyPrefix=family.rsplit("/", 1)[-1], sort="DESC", maxResults=5,
+        )["taskDefinitionArns"]
+        if len(listed) < 2:
+            print("Cannot roll back: only one revision exists.", file=sys.stderr)
+            return False
+        previous = listed[1]
+        print(f"Rolling back to {previous}")
+        ecs.update_service(
+            cluster=cluster,
+            service=service,
+            taskDefinition=previous,
+            forceNewDeployment=True,
+        )
+        return True
+    except ClientError as exc:
+        print(f"Rollback failed: {exc}", file=sys.stderr)
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Post-deploy canary monitoring")
+    parser.add_argument("--target-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--window", default="10m", help="How long to watch (10m, 30m, 1h)")
+    parser.add_argument("--no-rollback", action="store_true",
+                        help="Alert only, do not roll back automatically")
+    parser.add_argument("--interval", type=int, default=15, help="Poll interval in seconds")
+    parser.add_argument("--error-threshold", type=int, default=5,
+                        help="Error count per minute before rollback (default 5)")
+    args = parser.parse_args()
+
+    profile_path = args.target_dir / ".jarvis" / "profile.json"
+    if not profile_path.exists():
+        print(f"No profile at {profile_path}", file=sys.stderr)
+        return 1
+    profile = json.loads(profile_path.read_text())
+    app_name = profile.get("app_name", "")
+    region = profile.get("region", "us-east-1")
+    domain = profile.get("domain") or f"{app_name}.jarvis.app"
+
+    cluster = f"{app_name}-cluster"
+    service = f"{app_name}-api"
+    log_group = f"/ecs/{app_name}"
+    url = f"https://{domain}/api/health"
+
+    ecs = boto3.client("ecs", region_name=region)
+    logs = boto3.client("logs", region_name=region)
+
+    end_at = datetime.now(timezone.utc) + timedelta(seconds=parse_window(args.window))
+    last_check = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    print(f"Canary watching {url} until {end_at.strftime('%H:%M:%S')} UTC")
+    print(f"  poll interval: {args.interval}s, error threshold: {args.error_threshold}/min")
+    print(f"  rollback: {'OFF (alert-only)' if args.no_rollback else 'ON'}")
+    print()
+
+    failures = 0
+    while datetime.now(timezone.utc) < end_at:
+        now = datetime.now(timezone.utc)
+        ok, msg = healthcheck(url)
+        errors = recent_error_count(logs, log_group, last_check)
+        marker = "ok" if (ok and errors < args.error_threshold) else "FAIL"
+        print(f"[{now.strftime('%H:%M:%S')}] {marker}  health={msg} errors_last_minute={errors}")
+        last_check = now
+
+        if not ok:
+            failures += 1
+        if errors >= args.error_threshold:
+            failures += 1
+
+        if failures >= 3:
+            print(f"\n3 consecutive failures — triggering rollback.")
+            if args.no_rollback:
+                print("(--no-rollback: skipping actual rollback)")
+                return 1
+            if rollback(ecs, cluster, service):
+                print("Rollback initiated. Waiting for service to stabilize...")
+                ecs.get_waiter("services_stable").wait(cluster=cluster, services=[service])
+                print("Stable on previous revision.")
+                return 1
+            return 1
+
+        time.sleep(args.interval)
+
+    print(f"\nCanary period ended cleanly. No rollback needed.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

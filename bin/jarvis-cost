@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""
+jarvis-cost — explain your AWS bill in plain English with recommendations.
+
+Pulls Cost Explorer for the current month, breaks down by service,
+annotates each line with what it is and what's driving the cost, and
+suggests cuts ranked by savings potential.
+
+Usage:
+    jarvis-cost                          # current-month breakdown
+    jarvis-cost --month 2026-05          # specific month
+    jarvis-cost --forecast               # end-of-month projection
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import sys
+from pathlib import Path
+
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:
+    print("boto3 required. pip install boto3", file=sys.stderr)
+    sys.exit(1)
+
+
+ANNOTATIONS = {
+    "Amazon Elastic Container Service":    "your ECS Fargate Spot tasks (backend API)",
+    "Amazon OpenSearch Service":           "Knowledge Base vector index (minimum 2 OCU)",
+    "Amazon Bedrock":                      "AI chat invocations + agent traces",
+    "AWS Lambda":                          "background functions (suppression, etc.)",
+    "Amazon DynamoDB":                     "PAY_PER_REQUEST — scales with usage",
+    "Amazon CloudWatch":                   "logs ingestion + metrics",
+    "Amazon Simple Notification Service":  "bounce/complaint notifications",
+    "AWS Secrets Manager":                 "JWT, Stripe, HMAC secrets",
+    "Amazon Simple Email Service":         "transactional email",
+    "Amazon Simple Storage Service":       "S3 buckets (files, KB sources, terraform state)",
+    "Amazon Virtual Private Cloud":        "VPC endpoints (~$0.01/hr × 2 AZ each)",
+    "Amazon Elastic Load Balancing":       "ALB hours + LCUs",
+    "EC2 - Other":                         "data transfer, NAT (if any), EBS",
+    "Amazon EC2 Container Registry (ECR)": "Docker image storage",
+}
+
+
+def get_cost(client, start: str, end: str, group_by: str = "SERVICE"):
+    return client.get_cost_and_usage(
+        TimePeriod={"Start": start, "End": end},
+        Granularity="MONTHLY",
+        Metrics=["UnblendedCost"],
+        GroupBy=[{"Type": "DIMENSION", "Key": group_by}],
+    )
+
+
+def annotate(service: str) -> str:
+    return ANNOTATIONS.get(service, "")
+
+
+def suggest_cuts(services: list[dict], app_name: str) -> list[str]:
+    suggestions: list[str] = []
+    by_name = {s["name"]: s["cost"] for s in services}
+
+    if by_name.get("Amazon OpenSearch Service", 0) > 30:
+        suggestions.append(
+            f"OpenSearch Serverless is ${by_name['Amazon OpenSearch Service']:.0f}/mo.\n"
+            f"  If KB-backed chat is unused, drop the 'ai' feature and save ~$50/mo.\n"
+            f"  /jarvis-doctor can verify KB query volume; if 0, this is pure waste."
+        )
+    if by_name.get("Amazon CloudWatch", 0) > 5:
+        suggestions.append(
+            f"CloudWatch is ${by_name['Amazon CloudWatch']:.0f}/mo.\n"
+            f"  Default log retention is 30 days. Drop to 7 to halve this:\n"
+            f"  aws logs put-retention-policy --log-group-name /ecs/{app_name} --retention-in-days 7"
+        )
+    if by_name.get("Amazon Bedrock", 0) > 20:
+        suggestions.append(
+            f"Bedrock is ${by_name['Amazon Bedrock']:.0f}/mo.\n"
+            f"  Trace sampling 100% → 10% via Bedrock console can cut ~50% of trace cost\n"
+            f"  without losing observability. Adjust DEFAULT_MODEL to Nova Lite (cheapest)."
+        )
+    nat = by_name.get("EC2 - Other", 0)
+    if nat > 50:
+        suggestions.append(
+            f"EC2 - Other is ${nat:.0f}/mo. If a NAT Gateway is in this number, the\n"
+            f"  Jarvis VPC endpoint pattern would cut it. Run /jarvis-doctor; if it\n"
+            f"  reports 'no NAT in VPC', this is normal data-transfer cost."
+        )
+    if not suggestions:
+        suggestions.append("No obvious cuts at this volume. Stack is well-shaped.")
+    return suggestions
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Explain AWS bill + recommend cuts")
+    parser.add_argument("--target-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--month", help="YYYY-MM (default: current month)")
+    parser.add_argument("--forecast", action="store_true",
+                        help="Project end-of-month from current run rate")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    profile_path = args.target_dir / ".jarvis" / "profile.json"
+    if not profile_path.exists():
+        print(f"No profile at {profile_path}", file=sys.stderr)
+        return 1
+    profile = json.loads(profile_path.read_text())
+    app_name = profile.get("app_name", "")
+
+    if args.month:
+        year, month = map(int, args.month.split("-"))
+        start = dt.date(year, month, 1)
+        end = dt.date(year + (month // 12), (month % 12) + 1, 1)
+    else:
+        today = dt.date.today()
+        start = today.replace(day=1)
+        end = today + dt.timedelta(days=1)
+
+    # Cost Explorer is in us-east-1 only
+    ce = boto3.client("ce", region_name="us-east-1")
+    try:
+        resp = get_cost(ce, str(start), str(end))
+    except (BotoCoreError, ClientError) as exc:
+        print(f"Cost Explorer call failed: {exc}", file=sys.stderr)
+        print("Note: Cost Explorer must be enabled in your account billing settings.",
+              file=sys.stderr)
+        return 1
+
+    services = []
+    total = 0.0
+    for group in resp["ResultsByTime"][0].get("Groups", []):
+        name = group["Keys"][0]
+        cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
+        if cost < 0.01:
+            continue
+        services.append({"name": name, "cost": cost})
+        total += cost
+    services.sort(key=lambda s: -s["cost"])
+
+    if args.json:
+        print(json.dumps({"total": total, "services": services, "month": str(start)[:7]}, indent=2))
+        return 0
+
+    print(f"AWS cost for {start.strftime('%Y-%m')}: ${total:.2f}\n")
+    print(f"{'Service':<45} {'Cost':>8}  Why")
+    print(f"{'-' * 45} {'-' * 8}  {'-' * 30}")
+    for s in services[:15]:
+        annotation = annotate(s["name"])
+        print(f"{s['name'][:45]:<45} ${s['cost']:>7.2f}  {annotation}")
+
+    if args.forecast:
+        days_in_month = (start.replace(month=start.month + 1) - start).days if start.month < 12 else 31
+        day_of_month = dt.date.today().day
+        projected = total / max(day_of_month, 1) * days_in_month
+        print(f"\nProjected end-of-month: ${projected:.2f} (linear from MTD)")
+
+    print(f"\nRecommendations:")
+    for s in suggest_cuts(services, app_name):
+        print(f"  • {s}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

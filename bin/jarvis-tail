@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""
+jarvis-tail — multi-resource CloudWatch Logs tail with smart filtering.
+
+Reads .jarvis/profile.json + tails every relevant log group your app
+writes to: ECS service, Lambdas, API Gateway access logs, etc.
+
+Usage:
+    jarvis-tail                                # tail everything
+    jarvis-tail --since 30m                    # last 30 minutes only
+    jarvis-tail --filter "ERROR"               # match a string
+    jarvis-tail --service auth                 # just the auth-feature logs
+    jarvis-tail --follow                       # stream new events as they arrive
+
+Smart highlighting:
+    - red:    ERROR, FAIL, CRITICAL, exception, traceback
+    - yellow: WARN, retry, throttle, timeout
+    - dim:    INFO, request, healthcheck
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:
+    print("boto3 required. pip install boto3", file=sys.stderr)
+    sys.exit(1)
+
+RED = "\033[31m"
+YELLOW = "\033[33m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
+
+def parse_since(value: str) -> datetime:
+    """30m, 2h, 1d → datetime in the past."""
+    m = re.match(r"^(\d+)([smhd])$", value)
+    if not m:
+        raise ValueError(f"Invalid --since: {value} (use 30m, 2h, 1d)")
+    n, unit = int(m.group(1)), m.group(2)
+    delta = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[unit]
+    return datetime.now(timezone.utc) - timedelta(**{delta: n})
+
+
+def colorize(line: str) -> str:
+    if re.search(r"\b(ERROR|FAIL|CRITICAL|Exception|Traceback)\b", line):
+        return RED + line + RESET
+    if re.search(r"\b(WARN|retry|throttle|timeout|TimeoutError)\b", line, re.IGNORECASE):
+        return YELLOW + line + RESET
+    if re.search(r"\b(INFO|request|healthcheck|GET /api/health)\b", line):
+        return DIM + line + RESET
+    return line
+
+
+def discover_log_groups(app_name: str, region: str, service: str | None) -> list[str]:
+    logs = boto3.client("logs", region_name=region)
+    groups: list[str] = []
+    paginator = logs.get_paginator("describe_log_groups")
+    for page in paginator.paginate():
+        for g in page["logGroups"]:
+            name = g["logGroupName"]
+            if app_name in name:
+                if service and f"-{service}" not in name:
+                    continue
+                groups.append(name)
+    return sorted(groups)
+
+
+def tail(groups: list[str], region: str, since: datetime, follow: bool, filter_str: str | None):
+    logs = boto3.client("logs", region_name=region)
+    seen: set[str] = set()
+    start_ms = int(since.timestamp() * 1000)
+
+    while True:
+        any_new = False
+        for group in groups:
+            try:
+                kwargs = {"logGroupName": group, "startTime": start_ms, "limit": 100}
+                if filter_str:
+                    kwargs["filterPattern"] = filter_str
+                resp = logs.filter_log_events(**kwargs)
+                for event in resp.get("events", []):
+                    eid = event["eventId"]
+                    if eid in seen:
+                        continue
+                    seen.add(eid)
+                    ts = datetime.fromtimestamp(event["timestamp"] / 1000, timezone.utc)
+                    short_group = group.rsplit("/", 1)[-1][:20]
+                    line = f"{ts.strftime('%H:%M:%S')} [{short_group:20}] {event['message'].rstrip()}"
+                    print(colorize(line))
+                    any_new = True
+            except ClientError as exc:
+                if "ResourceNotFound" not in str(exc):
+                    print(f"  ERROR on {group}: {exc}", file=sys.stderr)
+        if not follow:
+            return
+        if not any_new:
+            time.sleep(3)
+        # Cap seen-set size so memory doesn't grow forever in long sessions
+        if len(seen) > 10_000:
+            seen = set(list(seen)[-5_000:])
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Multi-resource CloudWatch Logs tail")
+    parser.add_argument("--target-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--since", default="10m", help="30m, 2h, 1d (default: 10m)")
+    parser.add_argument("--filter", help="CloudWatch filter pattern (substring or quoted)")
+    parser.add_argument("--service", help="Limit to log groups containing -<service>")
+    parser.add_argument("--follow", action="store_true", help="Stream new events as they arrive")
+    args = parser.parse_args()
+
+    profile_path = args.target_dir / ".jarvis" / "profile.json"
+    if not profile_path.exists():
+        print(f"No profile at {profile_path}. Run /jarvis-init first.", file=sys.stderr)
+        return 1
+
+    profile = json.loads(profile_path.read_text())
+    app_name = profile.get("app_name", "")
+    region = profile.get("region", "us-east-1")
+    since = parse_since(args.since)
+
+    groups = discover_log_groups(app_name, region, args.service)
+    if not groups:
+        print(f"No log groups matching {app_name}{f' + service={args.service}' if args.service else ''}",
+              file=sys.stderr)
+        return 1
+
+    print(f"Tailing {len(groups)} log group(s) since {since.strftime('%H:%M:%S')} UTC")
+    for g in groups:
+        print(f"  {g}")
+    print()
+
+    try:
+        tail(groups, region, since, args.follow, args.filter)
+    except KeyboardInterrupt:
+        print("\nstopped.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

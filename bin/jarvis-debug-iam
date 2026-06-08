@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""
+jarvis-debug-iam — paste an AccessDenied error, get an IAM policy patch.
+
+The signature failure mode for missing IAM permissions:
+    "User: arn:aws:sts::...:assumed-role/<role> is not authorized to perform:
+     <service>:<Action> on resource: <arn>"
+
+This tool parses the error, generates a minimal IAM policy statement that
+would unblock it, and tells you which role to attach it to.
+
+Usage:
+    jarvis-debug-iam                                  # interactive paste
+    jarvis-debug-iam --error "User: arn:... not authorized..."
+    echo "error..." | jarvis-debug-iam
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+ERROR_PATTERN = re.compile(
+    r"User:\s*(\S+)\s+is not authorized to perform:\s*(\S+)"
+    r"(?:\s+on resource:\s*(\S+))?",
+    re.IGNORECASE,
+)
+
+
+def parse_error(text: str) -> dict | None:
+    m = ERROR_PATTERN.search(text)
+    if not m:
+        return None
+    return {
+        "principal": m.group(1),
+        "action": m.group(2),
+        "resource": m.group(3) or "*",
+    }
+
+
+def role_name_from_principal(principal: str) -> str | None:
+    """Pull the role name out of an assumed-role ARN."""
+    m = re.search(r"assumed-role/([^/]+)/", principal)
+    if m:
+        return m.group(1)
+    m = re.search(r":role/([^/]+)$", principal)
+    if m:
+        return m.group(1)
+    return None
+
+
+def suggest(parsed: dict) -> str:
+    action = parsed["action"]
+    resource = parsed["resource"]
+    role = role_name_from_principal(parsed["principal"]) or "<your-task-role>"
+    sid = action.replace(":", "").replace("*", "All")
+
+    return f"""\
+═══════════════════════════════════════════════════════════════════
+PARSED:
+═══════════════════════════════════════════════════════════════════
+  Principal: {parsed['principal']}
+  Role:      {role}
+  Action:    {action}
+  Resource:  {resource}
+
+═══════════════════════════════════════════════════════════════════
+ONE-OFF FIX (aws-cli, immediate):
+═══════════════════════════════════════════════════════════════════
+
+  aws iam put-role-policy \\
+      --role-name {role} \\
+      --policy-name Allow{sid} \\
+      --policy-document '{{
+          "Version": "2012-10-17",
+          "Statement": [{{
+              "Effect": "Allow",
+              "Action": "{action}",
+              "Resource": "{resource}"
+          }}]
+      }}'
+
+═══════════════════════════════════════════════════════════════════
+PROPER FIX (Terraform, persistent):
+═══════════════════════════════════════════════════════════════════
+
+Find the iac/iam/ policy file that targets this role and add this
+statement. If no policy exists yet, create one:
+
+  resource "aws_iam_role_policy" "{sid.lower()}" {{
+    name = "${{var.app_name}}-{sid.lower()}"
+    role = "{role}"
+
+    policy = jsonencode({{
+      Version = "2012-10-17"
+      Statement = [{{
+        Sid      = "{sid}"
+        Effect   = "Allow"
+        Action   = ["{action}"]
+        Resource = ["{resource}"]
+      }}]
+    }})
+  }}
+
+═══════════════════════════════════════════════════════════════════
+NOTES:
+═══════════════════════════════════════════════════════════════════
+
+- If '{resource}' is a wildcard, that's correct for actions that don't
+  support resource-level constraints (e.g., 'sts:AssumeRole').
+- Wildcard the action only when you need to (e.g., 'bedrock:InvokeModel*').
+  The 2026-01-16 CloudMortgage lesson: model-specific Bedrock IAM made
+  model swaps require IAM redeploys. Multi-model wildcard was the fix.
+- If this is the third 'AccessDenied' you've hit on this role today,
+  consider running /jarvis-doctor to surface other gaps before they bite.
+"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Diagnose IAM AccessDenied errors")
+    parser.add_argument("--error", help="Error text (if not provided, reads stdin)")
+    args = parser.parse_args()
+
+    if args.error:
+        error = args.error
+    elif not sys.stdin.isatty():
+        error = sys.stdin.read()
+    else:
+        print("Paste the AccessDenied error (Ctrl-D when done):", file=sys.stderr)
+        error = sys.stdin.read()
+
+    parsed = parse_error(error)
+    if not parsed:
+        print("Could not parse an AccessDenied error.", file=sys.stderr)
+        print("Expected shape: 'User: arn:... is not authorized to perform: <service>:<action>'",
+              file=sys.stderr)
+        return 1
+
+    print(suggest(parsed))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,5 +1,68 @@
 # Changelog
 
+## v1.6.0 — 2026-06-08
+
+Operational maturity release. Bundles v1.4 + v1.5 + v1.6.
+20 CLI binaries (was 10 in v1.3), 6 starter manifests (was 2), and a
+comprehensive command-reference README. All 19 unit tests pass.
+
+### v1.4 — Community on-ramp
+
+- Three new starter manifests: marketplace, internal-tool, mobile-backend
+- CONTRIBUTING.md — what we accept (incident-derived defaults first),
+  template contract, local-sandbox testing pattern
+- .github/ISSUE_TEMPLATE/bug.yml and incident-default.yml
+- .github/PULL_REQUEST_TEMPLATE.md
+- bin/jarvis-doctor --fix — interactive remediation. Walks each WARN/FAIL,
+  asks before applying (enable PITR, deletion-protection, S3 versioning).
+- bin/jarvis-upgrade-migrate --apply — actually writes the patches now.
+  Backs up each file before overwriting (in .jarvis/upgrade-backups/<ts>/).
+
+### v1.5 — Extensibility + cross-machine
+
+- ~/.jarvis/specialists/<name>/ — user-defined specialists. The renderer
+  resolves user dirs BEFORE built-ins. Same-name overrides built-ins.
+- docs/CUSTOM_SPECIALISTS.md — how to write one + override rules.
+- bin/jarvis-brain-sync init|status|push|pull — cross-machine memory via
+  a user-owned private git repo. Never syncs secrets, AWS access keys,
+  env files, .terraform, anything matching secret patterns. Files > 500KB
+  skipped automatically.
+- bin/jarvis-import — bulk import existing AWS account into Terraform.
+  Discovers DynamoDB/S3/ECS/Lambda/Secrets/ECR with --include / --exclude
+  fnmatch filters. Always adds prevent_destroy on data-bearing resources.
+  Never applies — writes iac/import/*.tf for the user to plan + apply.
+
+### v1.6 — Operational commands + first-run UX
+
+- bin/jarvis-aws-setup — get AWS credentials with three inputs (access key,
+  secret, region). Detects existing setup. Optional one-tap billing alarm
+  at $50/mo. --sso for Identity Center, --check for CI.
+- bin/jarvis-tail — multi-resource CloudWatch tail. Color-codes
+  ERROR/WARN/INFO. --filter (CW pattern), --service (filter to one
+  feature's logs), --follow (stream live).
+- bin/jarvis-debug-vpc — paste a Connect-timeout error, get the fix.
+  Parses the AWS service hostname, prints aws-cli one-off + Terraform
+  snippet. Covers SES, Bedrock, AOSS, States, SNS, SQS, Lambda, KMS,
+  and 10 more services.
+- bin/jarvis-debug-iam — paste an AccessDenied error, get an IAM policy
+  patch. Parses role + action + resource from the standard AWS error
+  shape.
+- bin/jarvis-cost — explains your AWS bill in plain English. Annotates
+  each Cost Explorer line with what it actually is, recommends cuts
+  ranked by savings potential.
+- bin/jarvis-canary — post-deploy monitoring loop with auto-rollback.
+  Watches health-check + recent error count for a window (default 10min).
+  3 consecutive failures → automatic rollback to prior task def.
+- bin/jarvis-scale — right-size from 14 days of CloudWatch metrics.
+  Applies a decision matrix, prints the Terraform variable change to
+  apply. Never auto-applies — capacity changes affect prod.
+
+### Repository hygiene
+
+- Scrubbed all references to external inspiration projects.
+- README rewritten as a complete command reference. Every binary,
+  every slash-skill, what it does, how to use it, with examples.
+
 ## v1.3.0 — 2026-06-08
 
 Launch-ready release. Reference outputs, test suite, CI, launch artifacts.
