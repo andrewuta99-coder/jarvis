@@ -212,6 +212,33 @@ jarvis-doctor --target-dir . --fix          # interactive remediation
 `--fix` walks each WARN/FAIL and asks for confirmation before applying
 a fix (e.g., "Enable PITR on `my-saas-users-v2`? [y/N]").
 
+### `/jarvis-study` — subsystem-scoped briefing
+
+Pairs with `/jarvis-doctor`. Doctor answers *"what's wrong?"*; study
+answers *"what is?"* — for one slice of the app, ready-for-work.
+
+Run it before any focused task ("add a tier to membership management",
+"extend the leads engine") and a sub-agent walks a 9-layer discovery
+recipe — project orientation, code surface, data, infra, cross-cutting
+concerns, conventions, past-incident gotchas (mined from CLAUDE.md),
+recent activity, and **touch-point synthesis** (the file:line list of
+what to modify for the most common feature changes).
+
+```bash
+/jarvis-study membership management   # produce or load brief
+/jarvis-study --refresh leads engine  # force regenerate
+/jarvis-study --list                  # enumerate cached briefs
+/jarvis-study                         # list briefs and prompt for topic
+```
+
+Briefs cache to `.jarvis/subsystems/<slug>.md`. Auto-refreshes when any
+file in scope changes (file-mtime based). When AWS credentials are
+available, IaC claims are verified against live state — drift is
+surfaced explicitly, not hidden.
+
+Output to the terminal is a TL;DR + section index + 10-line cheatsheet;
+the full brief stays in the file so it doesn't blow up your context.
+
 ### `/jarvis-cost` — explain your AWS bill
 
 Pulls Cost Explorer for the current month, breaks down by service,
@@ -477,7 +504,7 @@ Your apps stay live — Jarvis only manages the scaffold-time tooling.
 ## Status & roadmap
 
 **v1.6.0** (current) — Operational maturity.
-- 16 CLI binaries, 21 user-facing skills, 14 feature templates
+- 16 CLI binaries, 22 user-facing skills, 14 feature templates
 - 6 starter manifests
 - 19 unit tests pass, CI workflow in place
 - Cross-machine memory + custom specialists shipped
