@@ -41,6 +41,7 @@ When invoked alone, route based on what the user said:
 | "accept payments", "add Stripe" | `/jarvis-add-payments` |
 | "deploy", "ship", "go live" | `/jarvis-deploy` |
 | "is my stack healthy", "audit" | `/jarvis-doctor` |
+| "study the X workflow", "look into infra for", "prime me for adding to" | `/jarvis-study` |
 | "explain my AWS bill" | `/jarvis-cost` |
 | "remove Jarvis", "leave" | `/jarvis-eject` |
 | "update Jarvis", "upgrade" | `/jarvis-upgrade` |
