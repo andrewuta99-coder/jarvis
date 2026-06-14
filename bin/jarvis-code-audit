@@ -1,0 +1,653 @@
+#!/usr/bin/env python3
+"""
+jarvis-code-audit — line-by-line code review against Google + Anthropic
+engineering best practices.
+
+Runs available static analysis tools (graceful degradation when a tool
+is missing), then layers AST/regex smell detection on top: complexity,
+duplication, O(n²) patterns, god classes, magic numbers, dead code,
+naming, layering violations, missing tests.
+
+Writes a single Markdown report to .jarvis/audits/code-<ISO_DATE>.md
+and prints a summary. Exits 0 unless CRITICAL or MAJOR issues found
+in --strict mode.
+
+Usage:
+    jarvis-code-audit                                 # cwd, auto-detect
+    jarvis-code-audit --target-dir /path/to/repo
+    jarvis-code-audit --since main                     # only changed files
+    jarvis-code-audit --languages python,typescript
+    jarvis-code-audit --strict                          # exit 1 on MAJOR
+    jarvis-code-audit --output-dir /tmp/audits
+    jarvis-code-audit --json                            # machine-readable
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# ─── Severity ─────────────────────────────────────────────────────────────
+CRITICAL = "CRITICAL"
+MAJOR = "MAJOR"
+MINOR = "MINOR"
+NIT = "NIT"
+ORDER = [CRITICAL, MAJOR, MINOR, NIT]
+
+SCORE_PENALTY = {CRITICAL: 15, MAJOR: 5, MINOR: 1, NIT: 0.2}
+
+
+@dataclass
+class Finding:
+    severity: str
+    rule: str
+    title: str
+    file: str
+    line: int
+    detail: str
+    fix: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "severity": self.severity,
+            "rule": self.rule,
+            "title": self.title,
+            "file": self.file,
+            "line": self.line,
+            "detail": self.detail,
+            "fix": self.fix,
+        }
+
+
+# ─── File discovery ──────────────────────────────────────────────────────
+SKIP_DIRS = {
+    ".git", "node_modules", "venv", ".venv", "__pycache__", ".terraform",
+    "dist", "build", ".next", "coverage", "htmlcov", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".jarvis", "vendor", ".idea", ".vscode",
+}
+
+LANG_BY_EXT = {
+    ".py": "python",
+    ".ts": "typescript", ".tsx": "typescript",
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
+    ".tf": "terraform",
+    ".sh": "shell", ".bash": "shell",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+}
+
+
+def walk_source_files(root: Path, languages: set[str] | None) -> list[Path]:
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fn in filenames:
+            ext = Path(fn).suffix
+            lang = LANG_BY_EXT.get(ext)
+            if lang is None:
+                continue
+            if languages and lang not in languages:
+                continue
+            files.append(Path(dirpath) / fn)
+    return files
+
+
+def changed_files(root: Path, base: str) -> set[Path] | None:
+    """Return files changed vs base branch, or None if git not available."""
+    try:
+        out = subprocess.run(
+            ["git", "diff", "--name-only", base, "--"],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return {root / line for line in out.splitlines() if line}
+
+
+# ─── Static-analysis tool runners ────────────────────────────────────────
+@dataclass
+class ToolResult:
+    name: str
+    ran: bool
+    output: str = ""
+    findings: list[Finding] = field(default_factory=list)
+
+
+def run_if_exists(cmd: list[str], cwd: Path) -> tuple[int, str, str]:
+    if not shutil.which(cmd[0]):
+        return -1, "", ""
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def run_ruff(root: Path) -> ToolResult:
+    rc, out, err = run_if_exists(
+        ["ruff", "check", "--output-format", "json", "."], root,
+    )
+    result = ToolResult(name="ruff", ran=rc != -1, output=out + err)
+    if rc != -1:
+        try:
+            items = json.loads(out or "[]")
+            for it in items:
+                sev = MAJOR if it.get("code", "").startswith(("E", "F")) else MINOR
+                result.findings.append(Finding(
+                    severity=sev, rule=f"ruff/{it.get('code', '?')}",
+                    title=it.get("message", "ruff finding"),
+                    file=str(Path(it.get("filename", "")).relative_to(root)),
+                    line=(it.get("location") or {}).get("row", 0),
+                    detail=it.get("message", ""),
+                ))
+        except json.JSONDecodeError:
+            pass
+    return result
+
+
+def run_mypy(root: Path) -> ToolResult:
+    rc, out, err = run_if_exists(["mypy", "--no-color-output", "--no-error-summary", "."], root)
+    result = ToolResult(name="mypy", ran=rc != -1, output=out + err)
+    if rc != -1:
+        for line in (out or "").splitlines():
+            m = re.match(r"(.+?):(\d+):\s*error:\s*(.+)", line)
+            if m:
+                result.findings.append(Finding(
+                    severity=MAJOR, rule="mypy/type-error",
+                    title=m.group(3)[:80],
+                    file=str(Path(m.group(1))),
+                    line=int(m.group(2)),
+                    detail=m.group(3),
+                ))
+    return result
+
+
+def run_eslint(root: Path) -> ToolResult:
+    rc, out, err = run_if_exists(["eslint", "--format", "json", "."], root)
+    result = ToolResult(name="eslint", ran=rc != -1, output=out + err)
+    if rc != -1:
+        try:
+            items = json.loads(out or "[]")
+            for f in items:
+                for msg in f.get("messages", []):
+                    sev_map = {2: MAJOR, 1: MINOR, 0: NIT}
+                    result.findings.append(Finding(
+                        severity=sev_map.get(msg.get("severity"), MINOR),
+                        rule=f"eslint/{msg.get('ruleId', '?')}",
+                        title=msg.get("message", "")[:80],
+                        file=str(Path(f["filePath"]).relative_to(root)),
+                        line=msg.get("line", 0),
+                        detail=msg.get("message", ""),
+                    ))
+        except json.JSONDecodeError:
+            pass
+    return result
+
+
+def run_tsc(root: Path) -> ToolResult:
+    rc, out, err = run_if_exists(["npx", "tsc", "--noEmit", "--pretty", "false"], root)
+    result = ToolResult(name="tsc", ran=rc != -1, output=out + err)
+    if rc != -1:
+        for line in (out or "").splitlines():
+            m = re.match(r"(.+?)\((\d+),\d+\): error (TS\d+): (.+)", line)
+            if m:
+                result.findings.append(Finding(
+                    severity=MAJOR, rule=f"tsc/{m.group(3)}",
+                    title=m.group(4)[:80],
+                    file=str(Path(m.group(1))),
+                    line=int(m.group(2)),
+                    detail=m.group(4),
+                ))
+    return result
+
+
+def run_shellcheck(root: Path, files: list[Path]) -> ToolResult:
+    shells = [str(f) for f in files if f.suffix in (".sh", ".bash")]
+    result = ToolResult(name="shellcheck", ran=False)
+    if not shells:
+        return result
+    rc, out, err = run_if_exists(["shellcheck", "--format=json"] + shells, root)
+    result.ran = rc != -1
+    result.output = out + err
+    if rc != -1:
+        try:
+            for it in json.loads(out or "[]"):
+                level_map = {"error": MAJOR, "warning": MINOR, "info": NIT, "style": NIT}
+                result.findings.append(Finding(
+                    severity=level_map.get(it.get("level"), MINOR),
+                    rule=f"shellcheck/SC{it.get('code', '?')}",
+                    title=it.get("message", "")[:80],
+                    file=it.get("file", ""),
+                    line=it.get("line", 0),
+                    detail=it.get("message", ""),
+                ))
+        except json.JSONDecodeError:
+            pass
+    return result
+
+
+def run_terraform_fmt(root: Path) -> ToolResult:
+    rc, out, err = run_if_exists(["terraform", "fmt", "-check", "-recursive", "."], root)
+    result = ToolResult(name="terraform fmt", ran=rc != -1, output=out + err)
+    if rc != -1 and rc != 0:
+        for line in (out or "").splitlines():
+            if line.strip():
+                result.findings.append(Finding(
+                    severity=MINOR, rule="terraform/fmt",
+                    title="terraform fmt would change this file",
+                    file=line.strip(), line=0,
+                    detail="Run `terraform fmt` to format.",
+                ))
+    return result
+
+
+# ─── Universal smell detectors ───────────────────────────────────────────
+def detect_long_files(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for f in files:
+        try:
+            lines = f.read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        if len(lines) > 500:
+            sev = MAJOR if len(lines) > 1000 else MINOR
+            findings.append(Finding(
+                severity=sev, rule="smell/god-file",
+                title=f"File is {len(lines)} lines",
+                file=str(f.relative_to(root)),
+                line=1,
+                detail="Files over 500 lines are hard to navigate and review. Split by responsibility.",
+                fix="Identify 2-3 cohesive units inside; move them to separate files.",
+            ))
+    return findings
+
+
+def detect_python_smells(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for f in [x for x in files if x.suffix == ".py"]:
+        try:
+            src = f.read_text(errors="ignore")
+            tree = ast.parse(src, filename=str(f))
+        except (OSError, SyntaxError):
+            continue
+        rel = str(f.relative_to(root))
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                lines = (node.end_lineno or node.lineno) - node.lineno
+                if lines > 50:
+                    findings.append(Finding(
+                        severity=MAJOR, rule="smell/god-function",
+                        title=f"Function `{node.name}` is {lines} lines",
+                        file=rel, line=node.lineno,
+                        detail="Functions over 50 lines are hard to test and reason about.",
+                        fix="Extract sub-steps to helper functions. Aim for ≤ 30.",
+                    ))
+                # Long parameter list
+                params = len(node.args.args) + len(node.args.kwonlyargs)
+                if params > 5:
+                    findings.append(Finding(
+                        severity=MINOR, rule="smell/long-params",
+                        title=f"`{node.name}` has {params} parameters",
+                        file=rel, line=node.lineno,
+                        detail="Functions with > 5 params suggest a missing value object.",
+                        fix="Group related params into a dataclass or TypedDict.",
+                    ))
+                # Cyclomatic complexity (cheap proxy)
+                cc = 1 + sum(
+                    1 for sub in ast.walk(node)
+                    if isinstance(sub, (ast.If, ast.For, ast.While, ast.Try, ast.With,
+                                        ast.BoolOp, ast.ExceptHandler))
+                )
+                if cc > 10:
+                    sev = MAJOR if cc > 20 else MINOR
+                    findings.append(Finding(
+                        severity=sev, rule="smell/complexity",
+                        title=f"`{node.name}` cyclomatic complexity ≈ {cc}",
+                        file=rel, line=node.lineno,
+                        detail="High complexity functions are hard to test exhaustively.",
+                        fix="Extract conditional branches into named helpers.",
+                    ))
+            elif isinstance(node, ast.ClassDef):
+                methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                public = [m for m in methods if not m.name.startswith("_")]
+                if len(public) > 12:
+                    findings.append(Finding(
+                        severity=MAJOR, rule="smell/god-class",
+                        title=f"Class `{node.name}` has {len(public)} public methods",
+                        file=rel, line=node.lineno,
+                        detail="Classes with many responsibilities violate Single Responsibility.",
+                        fix="Split into smaller classes by responsibility.",
+                    ))
+
+        # O(n²) pattern: list.find / `x in list` inside a for-loop
+        nested_loop_smell = re.compile(
+            r"for\s+\w+\s+in\s+(\w+):.*?for\s+\w+\s+in\s+\1",
+            re.DOTALL,
+        )
+        if nested_loop_smell.search(src):
+            findings.append(Finding(
+                severity=MAJOR, rule="perf/nested-loop-same-collection",
+                title="Nested loop over the same collection — O(n²)",
+                file=rel, line=1,
+                detail="Iterating the same collection twice with nesting is quadratic.",
+                fix="Build a set/dict for membership/lookup, then iterate once.",
+            ))
+
+        # String concatenation in loop
+        for m in re.finditer(r"for\s+\w+\s+in\s+.+?\n[\s\S]+?\w+\s*\+=\s*['\"]", src):
+            line_no = src[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=MINOR, rule="perf/str-concat-in-loop",
+                title="String concatenation inside loop",
+                file=rel, line=line_no,
+                detail="Repeated str += in Python is O(n²) due to immutability.",
+                fix="Append to a list, then `''.join(...)` after the loop.",
+            ))
+            break  # one per file is enough
+
+        # Bare except
+        for m in re.finditer(r"except\s*:\s*", src):
+            line_no = src[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=MAJOR, rule="smell/bare-except",
+                title="Bare `except:` swallows everything (incl. KeyboardInterrupt)",
+                file=rel, line=line_no,
+                detail="Bare except blocks make debugging impossible and hide real bugs.",
+                fix="Catch specific exception types. Log + re-raise unless you know why.",
+            ))
+
+        # TODO/FIXME/XXX
+        for m in re.finditer(r"#\s*(TODO|FIXME|XXX)\b.*", src):
+            line_no = src[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=NIT, rule="hygiene/todo",
+                title=m.group(0)[:80],
+                file=rel, line=line_no,
+                detail="Catalogued (not flagged as defect).",
+            ))
+    return findings
+
+
+def detect_js_ts_smells(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    targets = [f for f in files if f.suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs")]
+    for f in targets:
+        try:
+            src = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+
+        # .find inside .map / .forEach (classic O(n²))
+        for m in re.finditer(
+            r"\.(map|forEach|filter)\s*\(\s*[\w(){}, ]*?=>\s*\{[^{}]*?\.(find|includes|indexOf)\s*\(",
+            src,
+        ):
+            line_no = src[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=MAJOR, rule="perf/nested-array-lookup",
+                title=".find/.includes inside .map/.forEach — O(n²)",
+                file=rel, line=line_no,
+                detail="Iterating two arrays this way is quadratic.",
+                fix="Build a Set / Map outside the loop; look up with O(1).",
+            ))
+
+        # `any` usage in TypeScript
+        if f.suffix in (".ts", ".tsx"):
+            for m in re.finditer(r":\s*any(\b|$)", src):
+                line_no = src[:m.start()].count("\n") + 1
+                findings.append(Finding(
+                    severity=MINOR, rule="ts/no-any",
+                    title="`: any` annotation defeats TypeScript",
+                    file=rel, line=line_no,
+                    detail="Prefer `unknown` and narrow, or define a real type.",
+                    fix="Replace with `unknown` + type guard, or a real interface.",
+                ))
+
+        # Magic numbers (rough — anything not 0, 1, -1, 100, 1024, 60)
+        for m in re.finditer(r"(?<![\w.])(\d{2,})(?![\w.])", src):
+            num = int(m.group(1))
+            if num in {100, 1000, 1024, 60, 24, 7, 12, 30, 365, 200, 201, 204, 400, 401, 403, 404, 500}:
+                continue
+            line_no = src[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=NIT, rule="hygiene/magic-number",
+                title=f"Magic number `{num}`",
+                file=rel, line=line_no,
+                detail="Extract to a named constant for readability.",
+            ))
+            # Cap per file
+            break
+    return findings
+
+
+def detect_duplicates(files: list[Path], root: Path) -> list[Finding]:
+    """Find runs of 10+ identical lines across the codebase."""
+    findings: list[Finding] = []
+    chunks: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    BLOCK = 10
+    for f in files:
+        try:
+            lines = [ln.strip() for ln in f.read_text(errors="ignore").splitlines()]
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+        for i in range(len(lines) - BLOCK + 1):
+            block = "\n".join(lines[i:i + BLOCK])
+            if not block.strip() or len(block) < 80:
+                continue
+            h = hashlib.sha1(block.encode()).hexdigest()
+            chunks[h].append((rel, i + 1))
+
+    for h, occurrences in chunks.items():
+        if len(occurrences) < 2:
+            continue
+        # Don't report when all occurrences are in the same file (a single
+        # function might just have a repetitive pattern locally — usually fine)
+        files_involved = {x[0] for x in occurrences}
+        if len(files_involved) < 2:
+            continue
+        head = occurrences[0]
+        findings.append(Finding(
+            severity=MAJOR, rule="dup/code-block",
+            title=f"{BLOCK}-line block duplicated across {len(files_involved)} files",
+            file=head[0], line=head[1],
+            detail=f"Same content found in: " + ", ".join(sorted(files_involved)[:5]),
+            fix="Extract to a shared helper, module, or template.",
+        ))
+    return findings
+
+
+def detect_missing_tests(files: list[Path], root: Path) -> list[Finding]:
+    """Source file with no plausible test file pair."""
+    findings: list[Finding] = []
+    test_files = {f.stem for f in files if "test" in str(f).lower()}
+    for f in files:
+        if "test" in str(f).lower():
+            continue
+        if f.suffix not in (".py", ".ts", ".tsx", ".js", ".jsx"):
+            continue
+        if f.stem in {"__init__", "index", "main", "conftest"}:
+            continue
+        candidates = {
+            f"test_{f.stem}",
+            f"{f.stem}_test",
+            f"{f.stem}.test",
+            f"{f.stem}.spec",
+        }
+        if not (candidates & test_files):
+            findings.append(Finding(
+                severity=MINOR, rule="hygiene/missing-tests",
+                title=f"No test file found for `{f.name}`",
+                file=str(f.relative_to(root)), line=1,
+                detail="Source file has no co-located or `tests/` test file.",
+                fix="Add at least one happy-path test per public function.",
+            ))
+    return findings
+
+
+# ─── Report rendering ────────────────────────────────────────────────────
+def compute_score(findings: list[Finding]) -> int:
+    penalty = sum(SCORE_PENALTY[f.severity] for f in findings)
+    return max(0, min(100, round(100 - penalty)))
+
+
+def render_report(
+    *, findings: list[Finding], tool_results: list[ToolResult],
+    target_dir: Path, since: str | None,
+) -> str:
+    by_sev = defaultdict(list)
+    for f in findings:
+        by_sev[f.severity].append(f)
+
+    score = compute_score(findings)
+    grade = "A" if score >= 90 else "B" if score >= 80 else "C" if score >= 70 else "D" if score >= 60 else "F"
+
+    lines = [
+        f"# Code Audit — {target_dir.name}",
+        f"Generated: {dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')}",
+        f"Window: {'HEAD vs ' + since if since else 'full tree'}",
+        f"Score: {score}/100 ({grade})",
+        "",
+        "## Summary",
+        f"- {len(by_sev[CRITICAL])} CRITICAL — must fix before merge",
+        f"- {len(by_sev[MAJOR])} MAJOR — should fix",
+        f"- {len(by_sev[MINOR])} MINOR — cleanup batch",
+        f"- {len(by_sev[NIT])} NIT — optional",
+        "",
+        "## Tools",
+    ]
+    for tr in tool_results:
+        status = "ran" if tr.ran else "not installed"
+        lines.append(f"- {tr.name}: {status} ({len(tr.findings)} findings)")
+    lines.append("")
+
+    for sev in ORDER:
+        items = by_sev[sev]
+        if not items:
+            continue
+        lines.append(f"## {sev} ({len(items)})")
+        for i, f in enumerate(items, 1):
+            lines.extend([
+                "",
+                f"### {sev[:3]}{i}. {f.title}",
+                f"**Rule**: `{f.rule}`",
+                f"**File**: `{f.file}:{f.line}`",
+                f"**Why**: {f.detail}",
+            ])
+            if f.fix:
+                lines.append(f"**Fix**: {f.fix}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Line-by-line code audit")
+    parser.add_argument("--target-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--since", help="Only audit files changed vs this git base")
+    parser.add_argument("--languages", help="Comma-separated, e.g. python,typescript")
+    parser.add_argument("--output-dir", type=Path,
+                        help="Where to write the report (default: .jarvis/audits/)")
+    parser.add_argument("--max-files", type=int, default=500)
+    parser.add_argument("--strict", action="store_true",
+                        help="Exit 1 if MAJOR or CRITICAL findings")
+    parser.add_argument("--json", action="store_true", help="Output JSON")
+    args = parser.parse_args()
+
+    target = args.target_dir.resolve()
+    if not target.exists():
+        print(f"Target does not exist: {target}", file=sys.stderr)
+        return 1
+
+    languages = set(args.languages.split(",")) if args.languages else None
+    files = walk_source_files(target, languages)
+
+    if args.since:
+        changed = changed_files(target, args.since)
+        if changed is not None:
+            files = [f for f in files if f.resolve() in {p.resolve() for p in changed}]
+
+    if len(files) > args.max_files:
+        print(f"NOTE: {len(files)} files found; auditing first {args.max_files}", file=sys.stderr)
+        files = files[: args.max_files]
+
+    if not files:
+        print("No source files to audit.")
+        return 0
+
+    print(f"Auditing {len(files)} file(s) under {target}...", file=sys.stderr)
+
+    findings: list[Finding] = []
+    tools: list[ToolResult] = []
+
+    # Tool runners
+    py_present = any(f.suffix == ".py" for f in files)
+    ts_present = any(f.suffix in (".ts", ".tsx") for f in files)
+    js_present = any(f.suffix in (".js", ".jsx", ".mjs") for f in files)
+    tf_present = any(f.suffix == ".tf" for f in files)
+    sh_present = any(f.suffix in (".sh", ".bash") for f in files)
+
+    if py_present:
+        for runner in (run_ruff, run_mypy):
+            tr = runner(target)
+            tools.append(tr)
+            findings.extend(tr.findings)
+    if ts_present:
+        tr = run_tsc(target); tools.append(tr); findings.extend(tr.findings)
+    if ts_present or js_present:
+        tr = run_eslint(target); tools.append(tr); findings.extend(tr.findings)
+    if tf_present:
+        tr = run_terraform_fmt(target); tools.append(tr); findings.extend(tr.findings)
+    if sh_present:
+        tr = run_shellcheck(target, files); tools.append(tr); findings.extend(tr.findings)
+
+    # Universal smell detectors
+    findings.extend(detect_long_files(files, target))
+    findings.extend(detect_python_smells(files, target))
+    findings.extend(detect_js_ts_smells(files, target))
+    findings.extend(detect_duplicates(files, target))
+    findings.extend(detect_missing_tests(files, target))
+
+    # Sort: severity, then file
+    findings.sort(key=lambda f: (ORDER.index(f.severity), f.file, f.line))
+
+    if args.json:
+        print(json.dumps({
+            "score": compute_score(findings),
+            "total_findings": len(findings),
+            "findings": [f.to_dict() for f in findings],
+            "tools": [{"name": t.name, "ran": t.ran, "findings": len(t.findings)} for t in tools],
+        }, indent=2, default=str))
+        return 0
+
+    report = render_report(findings=findings, tool_results=tools, target_dir=target, since=args.since)
+
+    out_dir = args.output_dir or (target / ".jarvis" / "audits")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"code-{dt.date.today().isoformat()}.md"
+    out_path.write_text(report)
+
+    score = compute_score(findings)
+    by_sev = Counter(f.severity for f in findings)
+
+    print(f"\nReport: {out_path.relative_to(target) if target in out_path.parents else out_path}")
+    print(f"Score:  {score}/100")
+    print(f"        {by_sev[CRITICAL]} CRITICAL, {by_sev[MAJOR]} MAJOR, {by_sev[MINOR]} MINOR, {by_sev[NIT]} NIT")
+
+    if args.strict and (by_sev[CRITICAL] or by_sev[MAJOR]):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

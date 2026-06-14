@@ -1,0 +1,734 @@
+#!/usr/bin/env python3
+"""
+jarvis-security-audit — OWASP Top 10 + LLM Top 10 + AWS hardening
+plus secret scanning, dependency CVE check, and architecture review.
+
+Writes a single Markdown report to .jarvis/audits/security-<ISO_DATE>.md
+and prints a summary. Exits 0 unless CRITICAL or HIGH (in --strict) found.
+
+Usage:
+    jarvis-security-audit                      # cwd
+    jarvis-security-audit --since main         # changed files only
+    jarvis-security-audit --aws                # also scan live AWS
+    jarvis-security-audit --strict             # exit 1 on HIGH+
+    jarvis-security-audit --json
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+CRITICAL = "CRITICAL"
+HIGH = "HIGH"
+MEDIUM = "MEDIUM"
+LOW = "LOW"
+ORDER = [CRITICAL, HIGH, MEDIUM, LOW]
+
+SCORE_PENALTY = {CRITICAL: 25, HIGH: 8, MEDIUM: 2, LOW: 0.5}
+
+
+@dataclass
+class Finding:
+    severity: str
+    rule: str                    # e.g., OWASP-A01, OWASP-LLM01, AWS-IAM
+    title: str
+    file: str
+    line: int
+    detail: str                  # MUST NOT contain secret values
+    fix: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "severity": self.severity, "rule": self.rule, "title": self.title,
+            "file": self.file, "line": self.line,
+            "detail": self.detail, "fix": self.fix,
+        }
+
+
+# ─── File discovery (same as code-audit) ─────────────────────────────────
+SKIP_DIRS = {
+    ".git", "node_modules", "venv", ".venv", "__pycache__", ".terraform",
+    "dist", "build", ".next", "coverage", "htmlcov", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".jarvis", "vendor",
+}
+
+
+def walk(root: Path) -> list[Path]:
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fn in filenames:
+            ext = Path(fn).suffix
+            if ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".tf", ".sh",
+                       ".yml", ".yaml", ".json", ".env", ".sql"):
+                out.append(Path(dirpath) / fn)
+    return out
+
+
+def changed_files(root: Path, base: str) -> set[Path] | None:
+    try:
+        out = subprocess.run(
+            ["git", "diff", "--name-only", base, "--"],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return {root / line for line in out.splitlines() if line}
+
+
+def is_test_path(rel: str) -> bool:
+    rel_l = rel.lower()
+    return any(p in rel_l for p in ("test", "fixture", "mock", "example", "sample"))
+
+
+# ─── Secret scanners ─────────────────────────────────────────────────────
+SECRET_PATTERNS: list[tuple[str, re.Pattern, str]] = [
+    ("AWS access key id",    re.compile(r"\b(AKIA[0-9A-Z]{16})\b"),                  "A02"),
+    ("AWS secret access key", re.compile(r"aws_secret_access_key\s*=\s*['\"][^'\"]{40}['\"]", re.I), "A02"),
+    ("Stripe live secret",   re.compile(r"\bsk_live_[0-9a-zA-Z]{20,}\b"),            "A02"),
+    ("Stripe test secret",   re.compile(r"\bsk_test_[0-9a-zA-Z]{20,}\b"),            "A02"),
+    ("Stripe webhook secret", re.compile(r"\bwhsec_[0-9a-zA-Z]{20,}\b"),             "A02"),
+    ("GitHub token",         re.compile(r"\b(ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{20,}\b"), "A02"),
+    ("Slack token",          re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),        "A02"),
+    ("Anthropic key",        re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),           "A02"),
+    ("OpenAI key",           re.compile(r"\bsk-(proj-)?[A-Za-z0-9_-]{20,}\b"),       "A02"),
+    ("Google API key",       re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"),              "A02"),
+    ("Private key block",    re.compile(r"-----BEGIN\s+(RSA|DSA|EC|OPENSSH|PGP)?\s*PRIVATE KEY-----"), "A02"),
+    ("Connection string with creds", re.compile(r"\b(postgres|mysql|mongodb)://[^:\s]+:[^@\s]+@"),     "A02"),
+]
+
+PLACEHOLDER_HINTS = ("xxx", "your_", "your-", "example", "placeholder", "replace_me",
+                     "changeme", "fake", "dummy", "sample")
+
+
+def scan_secrets(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for f in files:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+        test_mode = is_test_path(rel)
+        for name, pat, owasp in SECRET_PATTERNS:
+            for m in pat.finditer(text):
+                matched = m.group(0)
+                # Suppress obvious placeholders
+                if any(h in matched.lower() for h in PLACEHOLDER_HINTS):
+                    continue
+                if test_mode and "TESTING" in text.upper():
+                    continue
+                line_no = text[:m.start()].count("\n") + 1
+                sev = CRITICAL if not test_mode else HIGH
+                findings.append(Finding(
+                    severity=sev, rule=f"OWASP-{owasp}",
+                    title=f"{name} matched in source",
+                    file=rel, line=line_no,
+                    detail=f"Pattern for {name} matched. Value NOT shown for safety.",
+                    fix="Rotate the secret immediately. Move value to Secrets Manager. "
+                        "Scrub from git history with `git filter-repo`.",
+                ))
+    return findings
+
+
+# ─── OWASP A01 — Access control ──────────────────────────────────────────
+def scan_access_control(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for f in [x for x in files if x.suffix == ".py"]:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+
+        # DDB queries without tenantId — heuristic
+        for m in re.finditer(
+            r"\.(query|get_item)\s*\(\s*[^)]*KeyConditionExpression[^)]*\)",
+            text, re.DOTALL,
+        ):
+            block = m.group(0)
+            if "tenantId" not in block and "tenant_id" not in block and "tenantid" not in block.lower():
+                # Skip when this is a "users" table where tenantId IS the hash key
+                if 'KeyConditionExpression=Key("tenantId")' in block:
+                    continue
+                line_no = text[:m.start()].count("\n") + 1
+                findings.append(Finding(
+                    severity=HIGH, rule="OWASP-A01",
+                    title="DynamoDB query without tenant scoping",
+                    file=rel, line=line_no,
+                    detail="Query has no tenantId condition. Cross-tenant data leak risk.",
+                    fix='Add `& Key("tenantId").eq(user.tenant_id)` to the KeyConditionExpression.',
+                ))
+
+        # SQL queries without WHERE
+        for m in re.finditer(r"(SELECT\s+[^;]+?FROM\s+\w+)(?:\s*;|\s*[)\"'])", text, re.I):
+            stmt = m.group(1)
+            if "WHERE" not in stmt.upper() and len(stmt) < 200:
+                line_no = text[:m.start()].count("\n") + 1
+                findings.append(Finding(
+                    severity=MEDIUM, rule="OWASP-A01",
+                    title="SQL SELECT with no WHERE clause",
+                    file=rel, line=line_no,
+                    detail="Returns all rows. Confirm this is intentional + tenant-safe.",
+                    fix="Add a WHERE clause filtering by user/tenant.",
+                ))
+
+        # Routes without auth dependency
+        for m in re.finditer(r"@(?:router|app)\.(get|post|put|patch|delete)\s*\([^)]+\)\s*\n(?:async\s+)?def\s+(\w+)", text):
+            method = m.group(1)
+            fname = m.group(2)
+            line_no = text[:m.start()].count("\n") + 1
+            # Check 200 chars after for require_user / require_admin / Depends(...auth)
+            window = text[m.start(): m.start() + 400]
+            if "Depends" not in window and "@public" not in window:
+                if method in {"post", "put", "patch", "delete"}:
+                    findings.append(Finding(
+                        severity=HIGH, rule="OWASP-A01",
+                        title=f"`{method.upper()} {fname}` may be missing auth",
+                        file=rel, line=line_no,
+                        detail="Mutating endpoint with no Depends(...) auth in signature.",
+                        fix="Add `user: AuthUser = Depends(require_user)`. If public, mark with `# @public`.",
+                    ))
+    return findings
+
+
+# ─── OWASP A02 — Crypto ──────────────────────────────────────────────────
+def scan_crypto(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for f in files:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+
+        if f.suffix == ".py":
+            # MD5 / SHA-1 for auth-adjacent purposes
+            for m in re.finditer(r"hashlib\.(md5|sha1)\s*\(", text):
+                line_no = text[:m.start()].count("\n") + 1
+                # If nearby words include hash, sign, verify, password, token — high.
+                context = text[max(0, m.start() - 200): m.start() + 200].lower()
+                if any(w in context for w in ("password", "token", "signature", "sign", "verify", "auth")):
+                    findings.append(Finding(
+                        severity=HIGH, rule="OWASP-A02",
+                        title=f"{m.group(1).upper()} used in security context",
+                        file=rel, line=line_no,
+                        detail=f"{m.group(1)} is cryptographically broken for security uses.",
+                        fix="Use SHA-256+ for integrity; bcrypt/argon2 for passwords; HMAC for codes.",
+                    ))
+
+            # random.random instead of secrets
+            for m in re.finditer(r"\brandom\.(random|randint|choice|sample)\b", text):
+                line_no = text[:m.start()].count("\n") + 1
+                context = text[max(0, m.start() - 200): m.start() + 200].lower()
+                if any(w in context for w in ("token", "code", "secret", "password", "verify")):
+                    findings.append(Finding(
+                        severity=HIGH, rule="OWASP-A02",
+                        title="Weak randomness in security context",
+                        file=rel, line=line_no,
+                        detail="`random` is not cryptographically secure.",
+                        fix="Use `secrets.randbelow`, `secrets.token_urlsafe`, or `secrets.SystemRandom`.",
+                    ))
+
+            # JWT decode without algorithms=
+            for m in re.finditer(r"jwt\.decode\s*\([^)]*\)", text):
+                if "algorithms" not in m.group(0):
+                    line_no = text[:m.start()].count("\n") + 1
+                    findings.append(Finding(
+                        severity=CRITICAL, rule="OWASP-A02",
+                        title="jwt.decode without algorithms=",
+                        file=rel, line=line_no,
+                        detail="Algorithm confusion attack: token can be re-signed with HS256 using the public key.",
+                        fix='Pass `algorithms=["HS256"]` (or your real algorithm) explicitly.',
+                    ))
+
+            # Insecure ECB
+            for m in re.finditer(r"\bAES\.new\([^)]+MODE_ECB", text):
+                line_no = text[:m.start()].count("\n") + 1
+                findings.append(Finding(
+                    severity=HIGH, rule="OWASP-A02",
+                    title="AES with ECB mode",
+                    file=rel, line=line_no,
+                    detail="ECB leaks data patterns. Never use for anything > 1 block.",
+                    fix="Use AES-GCM or AES-CBC + HMAC.",
+                ))
+
+        if f.suffix == ".tf":
+            # DDB tables without server_side_encryption
+            if "aws_dynamodb_table" in text and "server_side_encryption" not in text:
+                findings.append(Finding(
+                    severity=MEDIUM, rule="OWASP-A02",
+                    title="DynamoDB table without server_side_encryption block",
+                    file=rel, line=1,
+                    detail="Encryption at rest should be explicit.",
+                    fix="Add `server_side_encryption { enabled = true }`.",
+                ))
+            # S3 without encryption
+            if "aws_s3_bucket" in text and "aws_s3_bucket_server_side_encryption_configuration" not in text:
+                findings.append(Finding(
+                    severity=MEDIUM, rule="OWASP-A02",
+                    title="S3 bucket without server_side_encryption_configuration",
+                    file=rel, line=1,
+                    detail="S3 should have explicit encryption configured.",
+                    fix="Add `aws_s3_bucket_server_side_encryption_configuration`.",
+                ))
+    return findings
+
+
+# ─── OWASP A03 — Injection ───────────────────────────────────────────────
+def scan_injection(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for f in [x for x in files if x.suffix == ".py"]:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+
+        # String-formatted SQL
+        for m in re.finditer(
+            r"""(?i)(execute|executemany|fetchone|fetchall)\s*\(\s*(f["']|["'][^"']*%[sd]|["'][^"']*\{.*?\})""",
+            text,
+        ):
+            line_no = text[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=CRITICAL, rule="OWASP-A03",
+                title="Possible SQL injection — formatted query",
+                file=rel, line=line_no,
+                detail="SQL string is built with format/concatenation. User input concatenated into SQL = injection.",
+                fix="Use parameterized queries (`%s` placeholders, NOT f-string interpolation).",
+            ))
+
+        # subprocess shell=True with input
+        for m in re.finditer(r"subprocess\.[\w_]+\([^)]*shell\s*=\s*True", text):
+            line_no = text[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=HIGH, rule="OWASP-A03",
+                title="subprocess with shell=True",
+                file=rel, line=line_no,
+                detail="If any argument comes from user input, this is OS command injection.",
+                fix="Pass args as a list, drop shell=True. Use shlex.quote if you must.",
+            ))
+
+        # os.system
+        for m in re.finditer(r"\bos\.system\s*\(", text):
+            line_no = text[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=HIGH, rule="OWASP-A03",
+                title="os.system() call",
+                file=rel, line=line_no,
+                detail="Direct shell execution — injection risk if any input is user-supplied.",
+                fix="Use subprocess.run with arg list. Validate inputs.",
+            ))
+
+        # SSRF candidate
+        for m in re.finditer(r"\brequests\.(get|post|put|delete|patch)\s*\(\s*(\w+)", text):
+            arg = m.group(2)
+            # If the URL var name suggests user input
+            if arg in {"url", "target", "endpoint", "callback", "redirect"}:
+                line_no = text[:m.start()].count("\n") + 1
+                findings.append(Finding(
+                    severity=MEDIUM, rule="OWASP-A10",
+                    title="Possible SSRF — outbound HTTP with variable URL",
+                    file=rel, line=line_no,
+                    detail="If URL is user-controlled, attacker can probe internal infra (169.254.169.254 metadata).",
+                    fix="Allow-list permitted hosts. Block private IP ranges. Set short timeout.",
+                ))
+    return findings
+
+
+# ─── OWASP A05 — Misconfiguration ────────────────────────────────────────
+def scan_misconfig(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for f in files:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+
+        # CORS allow_origins=["*"] + allow_credentials=True
+        for m in re.finditer(
+            r"CORSMiddleware\s*[\s\S]+?allow_credentials\s*=\s*True[\s\S]+?\)",
+            text,
+        ):
+            block = m.group(0)
+            if '"*"' in block or "['*']" in block or '["*"]' in block:
+                line_no = text[:m.start()].count("\n") + 1
+                findings.append(Finding(
+                    severity=HIGH, rule="OWASP-A05",
+                    title="CORS allows all origins with credentials",
+                    file=rel, line=line_no,
+                    detail="`allow_origins=['*']` + `allow_credentials=True` is rejected by browsers AND insecure.",
+                    fix="Scope to explicit origins; never combine wildcard with credentials.",
+                ))
+
+        # DEBUG=True
+        for m in re.finditer(r"\bDEBUG\s*=\s*True\b", text):
+            line_no = text[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=MEDIUM, rule="OWASP-A05",
+                title="DEBUG = True",
+                file=rel, line=line_no,
+                detail="Production exposure of debug info is dangerous.",
+                fix="Drive from env var; default to False.",
+            ))
+
+        # S3 public ACL
+        if f.suffix == ".tf":
+            if "aws_s3_bucket_public_access_block" not in text and "aws_s3_bucket" in text:
+                findings.append(Finding(
+                    severity=HIGH, rule="OWASP-A05",
+                    title="S3 bucket without public_access_block",
+                    file=rel, line=1,
+                    detail="Without public_access_block, a misconfigured ACL can expose the bucket.",
+                    fix="Add `aws_s3_bucket_public_access_block` with all four flags set to true.",
+                ))
+            # Wildcard IAM
+            if re.search(r'"Action"\s*:\s*"\*"', text) and re.search(r'"Resource"\s*:\s*"\*"', text):
+                findings.append(Finding(
+                    severity=HIGH, rule="OWASP-A05",
+                    title="IAM policy with wildcard Action AND wildcard Resource",
+                    file=rel, line=1,
+                    detail='Effectively grants full admin. Scope at minimum one side.',
+                    fix="Limit Action to a precise list and Resource to specific ARNs.",
+                ))
+            # Open security group
+            if "0.0.0.0/0" in text and "ingress" in text and (("22" in text) or ("3306" in text) or ("5432" in text)):
+                findings.append(Finding(
+                    severity=HIGH, rule="OWASP-A05",
+                    title="Security group ingress 0.0.0.0/0 on sensitive port",
+                    file=rel, line=1,
+                    detail="SSH/MySQL/Postgres open to the internet.",
+                    fix="Scope ingress to a bastion SG / VPC / corporate IP range.",
+                ))
+    return findings
+
+
+# ─── OWASP A09 — Logging hygiene ─────────────────────────────────────────
+def scan_logging(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    pii_words = ("password", "token", "secret", "api_key", "apikey", "credit_card", "ssn", "cvv")
+    for f in [x for x in files if x.suffix == ".py"]:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+        for m in re.finditer(r"(logger|log|print)\s*\.\s*\w+\s*\(([^)]*)\)", text):
+            args = m.group(2).lower()
+            for word in pii_words:
+                if word in args and ("{" in args or "%" in args or "+" in args or "f'" in args or 'f"' in args):
+                    line_no = text[:m.start()].count("\n") + 1
+                    findings.append(Finding(
+                        severity=HIGH, rule="OWASP-A09",
+                        title=f"Log statement appears to include `{word}`",
+                        file=rel, line=line_no,
+                        detail="Secrets/PII in logs can leak via CloudWatch, log aggregators, or screenshots.",
+                        fix=f"Redact `{word}` before logging. Log only counts or hashes.",
+                    ))
+                    break
+    return findings
+
+
+# ─── OWASP LLM01 — Prompt injection ──────────────────────────────────────
+def scan_llm(files: list[Path], root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for f in [x for x in files if x.suffix == ".py"]:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+
+        # User input concatenated into system/instruction string
+        for m in re.finditer(
+            r"(system_prompt|system|instruction|prompt)\s*=\s*f['\"][^'\"]*\{[\w.]*?\}[^'\"]*['\"]",
+            text,
+        ):
+            line_no = text[:m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=HIGH, rule="OWASP-LLM01",
+                title="User-controlled string interpolated into system/instruction prompt",
+                file=rel, line=line_no,
+                detail="If the interpolated variable comes from user input, it's prompt injection.",
+                fix="Mark trust boundary explicitly. Move user input into a USER role message; never into system.",
+            ))
+
+        # invoke_agent / chat with no max_tokens
+        if re.search(r"\binvoke_(agent|model)\s*\(", text) and "max_tokens" not in text and "maxTokens" not in text:
+            findings.append(Finding(
+                severity=MEDIUM, rule="OWASP-LLM04",
+                title="LLM invocation without max_tokens",
+                file=rel, line=1,
+                detail="Unbounded output enables model-DoS via prompts that elicit long responses.",
+                fix="Set max_tokens explicitly (e.g., 4096).",
+            ))
+
+        # Bedrock KB Retrieve without tenant filter
+        if "Retrieve" in text and "knowledgeBaseId" in text and "metadataFilter" not in text:
+            line_no = 1
+            findings.append(Finding(
+                severity=HIGH, rule="OWASP-LLM08",
+                title="KB Retrieve without metadataFilter",
+                file=rel, line=line_no,
+                detail="Multi-tenant KBs without metadata filtering leak cross-tenant context.",
+                fix="Add `retrievalConfiguration.vectorSearchConfiguration.filter` scoped to tenantId.",
+            ))
+    return findings
+
+
+# ─── Dependency CVE check ────────────────────────────────────────────────
+def scan_deps(target: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for req in target.rglob("requirements*.txt"):
+        if any(d in str(req) for d in SKIP_DIRS):
+            continue
+        if shutil.which("pip-audit"):
+            try:
+                proc = subprocess.run(
+                    ["pip-audit", "-r", str(req), "--format=json", "--progress-spinner=off"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if proc.returncode in (0, 1):
+                    try:
+                        data = json.loads(proc.stdout or "{}")
+                        for vuln in data.get("dependencies", []):
+                            for v in vuln.get("vulns", []):
+                                findings.append(Finding(
+                                    severity=HIGH, rule="OWASP-A06",
+                                    title=f"CVE in {vuln.get('name')}: {v.get('id')}",
+                                    file=str(req.relative_to(target)), line=1,
+                                    detail=v.get("description", "")[:200],
+                                    fix=f"Upgrade to one of: {', '.join(v.get('fix_versions', []) or ['latest'])}",
+                                ))
+                    except json.JSONDecodeError:
+                        pass
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            findings.append(Finding(
+                severity=LOW, rule="OWASP-A06",
+                title=f"Dep CVE check skipped for {req.name}",
+                file=str(req.relative_to(target)), line=1,
+                detail="pip-audit not installed; cannot verify CVE-free deps.",
+                fix="Install pip-audit: `pip install pip-audit`",
+            ))
+    return findings
+
+
+# ─── AWS live scan ────────────────────────────────────────────────────────
+def scan_aws_live(region: str) -> list[Finding]:
+    try:
+        import boto3
+        from botocore.exceptions import BotoCoreError, ClientError
+    except ImportError:
+        return [Finding(severity=LOW, rule="tool/missing", title="boto3 not installed",
+                        file="-", line=0, detail="Install boto3 for --aws scans.")]
+
+    findings: list[Finding] = []
+    iam = boto3.client("iam")
+    try:
+        summary = iam.get_account_summary()["SummaryMap"]
+        if summary.get("AccountMFAEnabled") != 1:
+            findings.append(Finding(
+                severity=CRITICAL, rule="AWS-IAM",
+                title="Root account MFA disabled",
+                file="aws/root", line=0,
+                detail="Root account without MFA is the single largest AWS risk.",
+                fix="Enable MFA on root immediately. https://console.aws.amazon.com/iam/home#/security_credentials",
+            ))
+    except (BotoCoreError, ClientError):
+        pass
+
+    # Old IAM access keys
+    try:
+        paginator = iam.get_paginator("list_users")
+        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=90)
+        for page in paginator.paginate():
+            for user in page["Users"]:
+                keys = iam.list_access_keys(UserName=user["UserName"])["AccessKeyMetadata"]
+                for k in keys:
+                    if k["CreateDate"] < cutoff and k["Status"] == "Active":
+                        findings.append(Finding(
+                            severity=MEDIUM, rule="AWS-IAM",
+                            title=f"IAM access key > 90 days: {user['UserName']}",
+                            file="aws/iam", line=0,
+                            detail=f"Key {k['AccessKeyId'][:8]}... is {(dt.datetime.now(dt.timezone.utc)-k['CreateDate']).days} days old.",
+                            fix="Rotate via IAM console; deactivate the old key after verifying the new one.",
+                        ))
+    except (BotoCoreError, ClientError):
+        pass
+
+    # S3 buckets without public access block
+    s3 = boto3.client("s3")
+    try:
+        for b in s3.list_buckets()["Buckets"]:
+            try:
+                pab = s3.get_public_access_block(Bucket=b["Name"])["PublicAccessBlockConfiguration"]
+                if not all(pab.values()):
+                    missing = [k for k, v in pab.items() if not v]
+                    findings.append(Finding(
+                        severity=HIGH, rule="AWS-S3",
+                        title=f"S3 bucket missing public access block: {b['Name']}",
+                        file=f"aws/s3/{b['Name']}", line=0,
+                        detail=f"Flags off: {', '.join(missing)}",
+                        fix="Enable all four flags via s3:PutPublicAccessBlock.",
+                    ))
+            except ClientError as exc:
+                if "NoSuchPublicAccessBlockConfiguration" in str(exc):
+                    findings.append(Finding(
+                        severity=HIGH, rule="AWS-S3",
+                        title=f"S3 bucket has NO public access block: {b['Name']}",
+                        file=f"aws/s3/{b['Name']}", line=0,
+                        detail="A misconfigured ACL or policy could expose the bucket.",
+                        fix="Apply public access block.",
+                    ))
+    except (BotoCoreError, ClientError):
+        pass
+
+    # DynamoDB PITR
+    ddb = boto3.client("dynamodb", region_name=region)
+    try:
+        for table in ddb.list_tables()["TableNames"]:
+            try:
+                resp = ddb.describe_continuous_backups(TableName=table)
+                if resp["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]["PointInTimeRecoveryStatus"] != "ENABLED":
+                    findings.append(Finding(
+                        severity=HIGH, rule="AWS-DDB",
+                        title=f"DynamoDB PITR disabled: {table}",
+                        file=f"aws/dynamodb/{table}", line=0,
+                        detail="No point-in-time recovery means accidental deletes are unrecoverable past TTL.",
+                        fix="aws dynamodb update-continuous-backups --table-name " + table + " --point-in-time-recovery-specification PointInTimeRecoveryEnabled=true",
+                    ))
+            except ClientError:
+                continue
+    except (BotoCoreError, ClientError):
+        pass
+
+    return findings
+
+
+# ─── Report rendering ────────────────────────────────────────────────────
+def compute_score(findings: list[Finding]) -> int:
+    return max(0, min(100, round(100 - sum(SCORE_PENALTY[f.severity] for f in findings))))
+
+
+def render_report(*, findings: list[Finding], target_dir: Path, aws_scanned: bool) -> str:
+    by_sev = defaultdict(list)
+    for f in findings:
+        by_sev[f.severity].append(f)
+
+    score = compute_score(findings)
+    grade = "A" if score >= 90 else "B" if score >= 80 else "C" if score >= 70 else "D" if score >= 60 else "F"
+
+    lines = [
+        f"# Security Audit — {target_dir.name}",
+        f"Generated: {dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')}",
+        f"Standards: OWASP Top 10 (2021), OWASP LLM Top 10 (2025), AWS WAF Security Pillar",
+        f"Score: {score}/100 ({grade})",
+        f"AWS live scan: {'YES' if aws_scanned else 'no'}",
+        "",
+        "## Summary",
+        f"- {len(by_sev[CRITICAL])} CRITICAL — block merge always",
+        f"- {len(by_sev[HIGH])} HIGH — must fix before launch",
+        f"- {len(by_sev[MEDIUM])} MEDIUM",
+        f"- {len(by_sev[LOW])} LOW",
+        "",
+    ]
+
+    for sev in ORDER:
+        items = by_sev[sev]
+        if not items:
+            continue
+        lines.append(f"## {sev} ({len(items)})")
+        for i, f in enumerate(items, 1):
+            lines.extend([
+                "",
+                f"### SEC-{sev[:1]}{i}. {f.title}",
+                f"**Standard**: `{f.rule}`",
+                f"**File**: `{f.file}:{f.line}`",
+                f"**Why**: {f.detail}",
+                f"**Fix**: {f.fix}" if f.fix else "",
+            ])
+        lines.append("")
+
+    return "\n".join([l for l in lines if l != ""])
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="OWASP + LLM + AWS security audit")
+    parser.add_argument("--target-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--since", help="Only audit files changed vs this git base")
+    parser.add_argument("--aws", action="store_true", help="Also scan live AWS")
+    parser.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    target = args.target_dir.resolve()
+    if not target.exists():
+        print(f"Target does not exist: {target}", file=sys.stderr)
+        return 1
+
+    files = walk(target)
+    if args.since:
+        changed = changed_files(target, args.since)
+        if changed is not None:
+            files = [f for f in files if f.resolve() in {p.resolve() for p in changed}]
+
+    print(f"Security audit on {len(files)} file(s) under {target}...", file=sys.stderr)
+
+    findings: list[Finding] = []
+    findings.extend(scan_secrets(files, target))
+    findings.extend(scan_access_control(files, target))
+    findings.extend(scan_crypto(files, target))
+    findings.extend(scan_injection(files, target))
+    findings.extend(scan_misconfig(files, target))
+    findings.extend(scan_logging(files, target))
+    findings.extend(scan_llm(files, target))
+    findings.extend(scan_deps(target))
+
+    if args.aws:
+        print("Scanning live AWS...", file=sys.stderr)
+        findings.extend(scan_aws_live(args.region))
+
+    findings.sort(key=lambda f: (ORDER.index(f.severity), f.file, f.line))
+
+    if args.json:
+        print(json.dumps({
+            "score": compute_score(findings),
+            "total": len(findings),
+            "findings": [f.to_dict() for f in findings],
+        }, indent=2, default=str))
+        return 0
+
+    report = render_report(findings=findings, target_dir=target, aws_scanned=args.aws)
+    out_dir = args.output_dir or (target / ".jarvis" / "audits")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"security-{dt.date.today().isoformat()}.md"
+    out_path.write_text(report)
+
+    score = compute_score(findings)
+    by_sev = Counter(f.severity for f in findings)
+    print(f"\nReport: {out_path.relative_to(target) if target in out_path.parents else out_path}")
+    print(f"Score:  {score}/100")
+    print(f"        {by_sev[CRITICAL]} CRITICAL, {by_sev[HIGH]} HIGH, {by_sev[MEDIUM]} MEDIUM, {by_sev[LOW]} LOW")
+
+    if by_sev[CRITICAL] or (args.strict and by_sev[HIGH]):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

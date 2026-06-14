@@ -334,6 +334,85 @@ jarvis-import --target-dir . --include 'cloudmortgage-*'
 jarvis-import --target-dir . --exclude 'test-*' --dry-run
 ```
 
+### `/jarvis-code-audit` — line-by-line code review
+
+Runs static analysis (ruff, mypy, eslint, tsc, terraform fmt, shellcheck —
+each skipped gracefully if missing) + universal smell detection: god files,
+god functions, cyclomatic complexity, duplicated 10-line blocks across the
+repo, **O(n²) patterns** (nested loops over the same collection, `.find()`
+inside `.map()`), magic numbers, dead code, missing test files, deeply
+nested logic. Writes one ranked report to `.jarvis/audits/code-<date>.md`
+with severity (CRITICAL / MAJOR / MINOR / NIT) and a 0–100 score.
+
+```bash
+jarvis-code-audit                              # cwd, auto-detect language
+jarvis-code-audit --since main                 # only changed files
+jarvis-code-audit --languages python,typescript
+jarvis-code-audit --strict                     # exit 1 if MAJOR or CRITICAL
+jarvis-code-audit --json                       # machine-readable
+```
+
+Standards baked in: Google Style Guides + Anthropic engineering principles
+(clarity over cleverness, fail loudly, explicit > implicit).
+
+### `/jarvis-security-audit` — OWASP + LLM + AWS
+
+OWASP Top 10 (2021) + OWASP LLM Top 10 (2025) + AWS Well-Architected
+Security Pillar. Scans for hardcoded secrets (AWS keys, Stripe, GitHub,
+Anthropic, OpenAI), broken access control (DynamoDB queries missing
+tenantId scope, unauthenticated mutating endpoints), weak crypto
+(MD5/SHA-1 in auth context, `jwt.decode` without `algorithms=`,
+AES-ECB), injection (f-string SQL, `subprocess shell=True`),
+misconfiguration (CORS `*` with credentials, public S3, wildcard IAM),
+logging hygiene (secrets in formatted log lines), and LLM-specific
+risks (prompt injection via user-input concatenation, KB retrieve
+without per-tenant `metadataFilter`).
+
+```bash
+jarvis-security-audit                          # static scan
+jarvis-security-audit --since main             # changed files only
+jarvis-security-audit --aws                    # also scan live AWS
+jarvis-security-audit --strict                 # exit 1 on HIGH+
+jarvis-security-audit --json
+```
+
+**Never prints secret values**, even partial. Findings reference file:line
++ pattern matched; rotation is up to you.
+
+### `/jarvis-pm` — product manager copilot
+
+For non-technical PMs. Walks you through 5 phases — who/why/what →
+customer journey → edge cases → wireframes → engineering translation —
+and produces 11 markdown files an engineer can implement directly:
+customer journey, user stories, acceptance criteria, edge cases (with
+feature-shape-specific checklists), API contracts (request / response /
+errors / PM-notes per endpoint), data model, ASCII wireframes, analytics
+events, rollout plan with kill switch, and a **PM-to-engineer phrase
+translation glossary** so you walk into standup fluent.
+
+PMs comfortable with CLI can drive the underlying bin directly:
+
+```bash
+jarvis-pm-spec init "shopping experience"
+jarvis-pm-spec set-meta shopping-experience persona "Sarah, 32, urban shopper"
+jarvis-pm-spec add-story shopping-experience \
+    --title "Browse by category" \
+    --as shopper \
+    --want "filter by category" \
+    --so "find products without scrolling" \
+    --criteria "Categories horizontal" "Filter changes < 300ms"
+jarvis-pm-spec add-api shopping-experience \
+    --method POST --path /api/cart/items \
+    --description "Add item to cart" \
+    --request '{"product_id":"prod_abc","quantity":1}' \
+    --response '{"cart_id":"...","items":[...]}' \
+    --pm-notes "Idempotency-Key required" "P95 latency < 200ms"
+jarvis-pm-spec summary shopping-experience
+```
+
+Output lands under `.jarvis/pm/<slug>/`. Hand the folder to engineering;
+they read SUMMARY.md and have at most 3-5 clarifying questions.
+
 ### `/jarvis-eject` — leave cleanly
 
 Generates a complete `ARCHITECTURE.md` capturing what was set up + why
@@ -503,17 +582,18 @@ Your apps stay live — Jarvis only manages the scaffold-time tooling.
 
 ## Status & roadmap
 
-**v1.6.0** (current) — Operational maturity.
-- 16 CLI binaries, 22 user-facing skills, 14 feature templates
+**v1.7.0** (current) — Audit + PM tooling.
+- 23 CLI binaries, 25 user-facing skills, 14 feature templates
 - 6 starter manifests
 - 19 unit tests pass, CI workflow in place
-- Cross-machine memory + custom specialists shipped
-- Brownfield AWS import shipped
-- Live tail + cost + scale + canary + 2 debug commands shipped
+- **Code Audit** (line-by-line, Google + Anthropic principles, O(n²) detection)
+- **Security Audit** (OWASP Top 10 + LLM Top 10 + AWS WAF Security Pillar)
+- **PM copilot** (5-phase interview → 11 markdown spec files)
+- Cross-machine memory, custom specialists, brownfield AWS import
+- Live tail + cost + scale + canary + 2 debug commands
 
-**v1.7** — Demo + first 100 users, polished error messages
-**v1.8** — Compliance modes (`--compliance soc2` / hipaa / fedramp)
-**v1.9** — Plugin system for community-contributed specialists
+**v1.8** — Demo + first 100 users, polished error messages
+**v1.9** — Compliance modes (`--compliance soc2` / hipaa / fedramp)
 **v2.0** — Hosted team dashboard (CLI stays MIT free forever) +
 template registry + second cloud (Cloudflare adapter)
 

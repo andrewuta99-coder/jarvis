@@ -1,0 +1,497 @@
+#!/usr/bin/env python3
+"""
+jarvis-pm-spec — produces engineer-ready PM artifacts on disk.
+
+Used by the /jarvis-pm skill (which calls it after each interview phase),
+or invoked directly by CLI-comfortable PMs.
+
+Subcommands:
+    init <feature-name>      Set up .jarvis/pm/<slug>/ with empty templates
+    set-meta <key> <value>   Update a meta field (persona, status_quo, jtbd)
+    add-story                Add a user story (interactive or flags)
+    add-edge                 Add an edge case
+    add-api                  Add an API endpoint contract
+    add-event                Add an analytics event
+    summary                  Regenerate SUMMARY.md from current files
+    list                     List features under .jarvis/pm/
+    show <slug> [file]       Print a feature's spec (or one file)
+
+All output is markdown. No questions asked at the CLI — flags or stdin only.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import re
+import sys
+from pathlib import Path
+
+
+PM_DIR = Path(".jarvis/pm")
+
+TEMPLATES = {
+    "01-customer-journey.md": """\
+# Customer Journey — {feature}
+
+> Step-by-step what the customer does from "I have a need" to "I got it."
+> Each step: what they do, what they feel, what they need from the product.
+
+## Persona
+TBD — fill via `jarvis-pm-spec set-meta persona "..."`
+
+## Status quo (how they do this today)
+TBD — fill via `jarvis-pm-spec set-meta status_quo "..."`
+
+## Job-to-be-done
+TBD — fill via `jarvis-pm-spec set-meta jtbd "..."`
+
+## Journey
+
+| # | Step | Customer state | Product needs to... |
+|---|------|----------------|---------------------|
+|   |      |                |                     |
+""",
+    "02-user-stories.md": """\
+# User Stories — {feature}
+
+Format: As a [persona], I want [capability], so that [outcome].
+
+""",
+    "03-acceptance-criteria.md": """\
+# Acceptance Criteria — {feature}
+
+Definition of done per user story. Test each one before shipping.
+
+""",
+    "04-edge-cases.md": """\
+# Edge Cases — {feature}
+
+What goes wrong. What the customer sees. What we do.
+
+""",
+    "05-api-contracts.md": """\
+# API Contracts — {feature}
+
+Endpoints for the backend team to implement.
+Format per endpoint: Method + Path + Request + Response + Errors + PM notes.
+
+""",
+    "06-data-model.md": """\
+# Data Model — {feature}
+
+## Entities
+TBD
+
+## Relationships
+TBD
+
+## Key fields per entity
+TBD
+
+""",
+    "07-wireframes.md": """\
+# Wireframes — {feature}
+
+ASCII layouts of every screen. Not pretty — clear.
+
+## Screen: [name]
+```
+┌─────────────────────────┐
+│                         │
+└─────────────────────────┘
+```
+
+States: empty / loading / success / error
+""",
+    "08-analytics.md": """\
+# Analytics — {feature}
+
+Events to track, why, and what success looks like.
+
+| Event | Properties | When | Why |
+|-------|------------|------|-----|
+|       |            |      |     |
+
+## Definition of success
+TBD — what number, by when, attributable to this feature.
+""",
+    "09-rollout-plan.md": """\
+# Rollout Plan — {feature}
+
+## Phase 1: internal dogfood
+- Audience: team only
+- Duration: 1 week
+- Success: no P0/P1 bugs
+- Kill switch: feature flag `{slug}_enabled` set to false
+
+## Phase 2: 5% of users
+- Audience: random sample of 5%
+- Duration: 2 weeks
+- Success metrics:
+- Kill switch: same flag, off for everyone
+
+## Phase 3: full rollout
+- Audience: all users
+- Pre-flight: load test passes at 2x peak
+""",
+    "10-pm-to-engineer.md": """\
+# PM-to-Engineer Translation — {feature}
+
+How to say what you mean to engineers.
+
+| PM might say | Better as | Why it works |
+|--------------|-----------|--------------|
+|              |           |              |
+""",
+}
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────
+def slugify(name: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s or "feature"
+
+
+def feature_dir(slug: str) -> Path:
+    return PM_DIR / slug
+
+
+def ensure_feature(slug: str) -> Path:
+    fd = feature_dir(slug)
+    if not fd.exists():
+        print(f"Feature not found: {slug}. Use `jarvis-pm-spec init '<name>'` first.", file=sys.stderr)
+        sys.exit(1)
+    return fd
+
+
+def read_meta(slug: str) -> dict:
+    meta_path = feature_dir(slug) / "meta.json"
+    if not meta_path.exists():
+        return {}
+    return json.loads(meta_path.read_text())
+
+
+def write_meta(slug: str, meta: dict) -> None:
+    (feature_dir(slug) / "meta.json").write_text(json.dumps(meta, indent=2))
+
+
+# ─── Subcommand: init ────────────────────────────────────────────────────
+def cmd_init(args) -> int:
+    slug = slugify(args.name)
+    fd = feature_dir(slug)
+    if fd.exists():
+        print(f"Already exists: {fd}. Use a different name or `rm -rf {fd}` first.", file=sys.stderr)
+        return 1
+    fd.mkdir(parents=True)
+    for filename, template in TEMPLATES.items():
+        (fd / filename).write_text(template.format(feature=args.name, slug=slug))
+    meta = {
+        "feature": args.name,
+        "slug": slug,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "stories": [],
+        "edges": [],
+        "apis": [],
+        "events": [],
+    }
+    write_meta(slug, meta)
+    _regenerate_summary(slug, meta)
+    print(f"Created {fd}/")
+    print(f"  11 markdown templates + SUMMARY.md")
+    print(f"\nNext steps:")
+    print(f"  jarvis-pm-spec set-meta {slug} persona 'Sarah, 32, urban shopper, time-poor'")
+    print(f"  jarvis-pm-spec add-story {slug} --title 'Browse by category' \\")
+    print(f"      --as shopper --want 'filter by category' \\")
+    print(f"      --so 'find products without scrolling'")
+    return 0
+
+
+# ─── Subcommand: set-meta ────────────────────────────────────────────────
+def cmd_set_meta(args) -> int:
+    ensure_feature(args.slug)
+    meta = read_meta(args.slug)
+    meta[args.key] = args.value
+    write_meta(args.slug, meta)
+
+    # If updating persona / jtbd / status_quo, also patch the customer journey file
+    journey = feature_dir(args.slug) / "01-customer-journey.md"
+    text = journey.read_text()
+    if args.key in {"persona", "status_quo", "jtbd"}:
+        heading_map = {
+            "persona": "## Persona",
+            "status_quo": "## Status quo (how they do this today)",
+            "jtbd": "## Job-to-be-done",
+        }
+        heading = heading_map[args.key]
+        pattern = re.compile(rf"({re.escape(heading)}\n)(.*?)(?=\n##|\Z)", re.DOTALL)
+        replacement = f"\\1{args.value}\n"
+        text = pattern.sub(replacement, text)
+        journey.write_text(text)
+
+    _regenerate_summary(args.slug, meta)
+    print(f"Set {args.key}.")
+    return 0
+
+
+# ─── Subcommand: add-story ───────────────────────────────────────────────
+def cmd_add_story(args) -> int:
+    ensure_feature(args.slug)
+    meta = read_meta(args.slug)
+    story_num = len(meta.get("stories", [])) + 1
+    story_id = f"US-{story_num:03d}"
+    entry = {
+        "id": story_id,
+        "title": args.title,
+        "as_": args.as_,
+        "want": args.want,
+        "so": args.so,
+        "criteria": args.criteria or [],
+    }
+    meta.setdefault("stories", []).append(entry)
+    write_meta(args.slug, meta)
+
+    # Append to 02-user-stories.md
+    stories_path = feature_dir(args.slug) / "02-user-stories.md"
+    block = (
+        f"\n## {story_id}: {args.title}\n"
+        f"As a {args.as_}\n"
+        f"I want {args.want}\n"
+        f"So that {args.so}\n"
+    )
+    stories_path.write_text(stories_path.read_text() + block)
+
+    # And to 03-acceptance-criteria.md
+    crit_path = feature_dir(args.slug) / "03-acceptance-criteria.md"
+    crit_block = f"\n## {story_id}: {args.title}\n"
+    if args.criteria:
+        for c in args.criteria:
+            crit_block += f"- {c}\n"
+    else:
+        crit_block += "- TBD\n"
+    crit_path.write_text(crit_path.read_text() + crit_block)
+
+    _regenerate_summary(args.slug, meta)
+    print(f"Added {story_id}: {args.title}")
+    return 0
+
+
+# ─── Subcommand: add-edge ────────────────────────────────────────────────
+def cmd_add_edge(args) -> int:
+    ensure_feature(args.slug)
+    meta = read_meta(args.slug)
+    entry = {"when": args.when, "sees": args.sees, "we_do": args.we_do}
+    meta.setdefault("edges", []).append(entry)
+    write_meta(args.slug, meta)
+
+    edges_path = feature_dir(args.slug) / "04-edge-cases.md"
+    text = edges_path.read_text()
+    # Ensure a table header exists
+    if "| When |" not in text:
+        text += "\n| When | What customer sees | What we do |\n|------|---------------------|------------|\n"
+    text += f"| {args.when} | {args.sees} | {args.we_do} |\n"
+    edges_path.write_text(text)
+    _regenerate_summary(args.slug, meta)
+    print(f"Added edge case: {args.when}")
+    return 0
+
+
+# ─── Subcommand: add-api ─────────────────────────────────────────────────
+def cmd_add_api(args) -> int:
+    ensure_feature(args.slug)
+    meta = read_meta(args.slug)
+    entry = {
+        "method": args.method.upper(), "path": args.path,
+        "description": args.description,
+        "request": args.request, "response": args.response,
+        "errors": args.errors or [],
+        "pm_notes": args.pm_notes or [],
+    }
+    meta.setdefault("apis", []).append(entry)
+    write_meta(args.slug, meta)
+
+    api_path = feature_dir(args.slug) / "05-api-contracts.md"
+    block = [f"\n## {entry['method']} {entry['path']}", entry["description"], ""]
+    if entry["request"]:
+        block += ["### Request", "```json", entry["request"], "```", ""]
+    if entry["response"]:
+        block += ["### Response — 200 OK", "```json", entry["response"], "```", ""]
+    if entry["errors"]:
+        block.append("### Errors")
+        for e in entry["errors"]:
+            block.append(f"- {e}")
+        block.append("")
+    if entry["pm_notes"]:
+        block.append("### PM notes for the backend team")
+        for n in entry["pm_notes"]:
+            block.append(f"- {n}")
+    api_path.write_text(api_path.read_text() + "\n".join(block) + "\n")
+    _regenerate_summary(args.slug, meta)
+    print(f"Added API: {entry['method']} {entry['path']}")
+    return 0
+
+
+# ─── Subcommand: add-event ───────────────────────────────────────────────
+def cmd_add_event(args) -> int:
+    ensure_feature(args.slug)
+    meta = read_meta(args.slug)
+    entry = {"name": args.name, "properties": args.properties or [],
+             "when": args.when, "why": args.why}
+    meta.setdefault("events", []).append(entry)
+    write_meta(args.slug, meta)
+
+    analytics_path = feature_dir(args.slug) / "08-analytics.md"
+    text = analytics_path.read_text()
+    if "| Event |" not in text:
+        text += "\n| Event | Properties | When | Why |\n|-------|------------|------|-----|\n"
+    props = ", ".join(args.properties) if args.properties else "-"
+    text += f"| `{args.name}` | {props} | {args.when} | {args.why} |\n"
+    analytics_path.write_text(text)
+    _regenerate_summary(args.slug, meta)
+    print(f"Added event: {args.name}")
+    return 0
+
+
+# ─── Subcommand: summary ─────────────────────────────────────────────────
+def cmd_summary(args) -> int:
+    ensure_feature(args.slug)
+    meta = read_meta(args.slug)
+    _regenerate_summary(args.slug, meta)
+    print(f"Regenerated SUMMARY.md")
+    return 0
+
+
+def _regenerate_summary(slug: str, meta: dict) -> None:
+    fd = feature_dir(slug)
+    summary = [
+        f"# {meta['feature']}",
+        "",
+        f"Slug: `{slug}`",
+        f"Created: {meta.get('created_at', 'unknown')}",
+        "",
+        "## At a glance",
+        f"- {len(meta.get('stories', []))} user stories",
+        f"- {len(meta.get('edges', []))} edge cases handled",
+        f"- {len(meta.get('apis', []))} API endpoints to implement",
+        f"- {len(meta.get('events', []))} analytics events",
+        "",
+        "## Persona, status quo, JTBD",
+        f"- **Persona**: {meta.get('persona', 'TBD')}",
+        f"- **Status quo**: {meta.get('status_quo', 'TBD')}",
+        f"- **JTBD**: {meta.get('jtbd', 'TBD')}",
+        "",
+        "## File map (read in this order)",
+        "1. `01-customer-journey.md` — step-by-step what the customer does",
+        "2. `02-user-stories.md` — As a... I want... So that...",
+        "3. `03-acceptance-criteria.md` — definition of done per story",
+        "4. `04-edge-cases.md` — what goes wrong + how to handle",
+        "5. `05-api-contracts.md` — endpoints for engineers to implement",
+        "6. `06-data-model.md` — entities, relationships, key fields",
+        "7. `07-wireframes.md` — ASCII layouts of every screen",
+        "8. `08-analytics.md` — events to track",
+        "9. `09-rollout-plan.md` — phased launch + kill switch",
+        "10. `10-pm-to-engineer.md` — PM-speak → engineer-speak",
+        "",
+        "## What to do with this folder",
+        "1. Read the file map above end-to-end (~10 min).",
+        "2. Send to your engineering lead.",
+        "3. They'll ask 3-5 clarification questions — use `10-pm-to-engineer.md` to answer fluently.",
+        "4. Engineering breaks into tickets and estimates.",
+    ]
+    (fd / "SUMMARY.md").write_text("\n".join(summary))
+
+
+# ─── Subcommand: list / show ─────────────────────────────────────────────
+def cmd_list(args) -> int:
+    if not PM_DIR.exists():
+        print("No features yet. Use `jarvis-pm-spec init '<name>'` to start.", file=sys.stderr)
+        return 0
+    for sub in sorted(PM_DIR.iterdir()):
+        if not sub.is_dir():
+            continue
+        meta_path = sub / "meta.json"
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        stories = len(meta.get("stories", []))
+        apis = len(meta.get("apis", []))
+        print(f"  {sub.name}  ({stories} stories, {apis} APIs)  — {meta.get('feature', '')}")
+    return 0
+
+
+def cmd_show(args) -> int:
+    fd = ensure_feature(args.slug)
+    target = fd / args.file if args.file else fd / "SUMMARY.md"
+    if not target.exists():
+        print(f"File not found: {target}", file=sys.stderr)
+        return 1
+    print(target.read_text())
+    return 0
+
+
+# ─── Main ────────────────────────────────────────────────────────────────
+def main() -> int:
+    parser = argparse.ArgumentParser(description="PM spec generator")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("init", help="Set up a new feature spec folder")
+    p.add_argument("name", help="Human-readable feature name")
+    p.set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("set-meta", help="Set a meta field (persona, status_quo, jtbd, anything)")
+    p.add_argument("slug")
+    p.add_argument("key")
+    p.add_argument("value")
+    p.set_defaults(fn=cmd_set_meta)
+
+    p = sub.add_parser("add-story", help="Add a user story")
+    p.add_argument("slug")
+    p.add_argument("--title", required=True)
+    p.add_argument("--as", dest="as_", required=True, help="Persona (e.g., 'shopper')")
+    p.add_argument("--want", required=True)
+    p.add_argument("--so", required=True)
+    p.add_argument("--criteria", nargs="*", help="Acceptance criteria lines")
+    p.set_defaults(fn=cmd_add_story)
+
+    p = sub.add_parser("add-edge", help="Add an edge case")
+    p.add_argument("slug")
+    p.add_argument("--when", required=True)
+    p.add_argument("--sees", required=True, help="What the customer sees")
+    p.add_argument("--we-do", dest="we_do", required=True, help="How we handle it")
+    p.set_defaults(fn=cmd_add_edge)
+
+    p = sub.add_parser("add-api", help="Add an API endpoint contract")
+    p.add_argument("slug")
+    p.add_argument("--method", required=True, choices=["GET", "POST", "PUT", "PATCH", "DELETE", "get", "post", "put", "patch", "delete"])
+    p.add_argument("--path", required=True)
+    p.add_argument("--description", required=True)
+    p.add_argument("--request", default="", help="Request body example (JSON)")
+    p.add_argument("--response", default="", help="200 response example (JSON)")
+    p.add_argument("--errors", nargs="*")
+    p.add_argument("--pm-notes", dest="pm_notes", nargs="*")
+    p.set_defaults(fn=cmd_add_api)
+
+    p = sub.add_parser("add-event", help="Add an analytics event")
+    p.add_argument("slug")
+    p.add_argument("--name", required=True)
+    p.add_argument("--properties", nargs="*")
+    p.add_argument("--when", required=True)
+    p.add_argument("--why", required=True)
+    p.set_defaults(fn=cmd_add_event)
+
+    p = sub.add_parser("summary", help="Regenerate SUMMARY.md")
+    p.add_argument("slug")
+    p.set_defaults(fn=cmd_summary)
+
+    p = sub.add_parser("list", help="List features under .jarvis/pm/")
+    p.set_defaults(fn=cmd_list)
+
+    p = sub.add_parser("show", help="Print a feature's spec (or one file)")
+    p.add_argument("slug")
+    p.add_argument("file", nargs="?")
+    p.set_defaults(fn=cmd_show)
+
+    args = parser.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

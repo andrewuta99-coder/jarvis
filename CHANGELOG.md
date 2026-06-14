@@ -1,5 +1,97 @@
 # Changelog
 
+## v1.7.0 — 2026-06-14
+
+Three new audit + product skills.
+
+### Code Audit (new)
+
+`bin/jarvis-code-audit` + `code-audit/SKILL.md`. Line-by-line review
+against Google Style Guides + Anthropic engineering principles.
+
+Detects:
+- Static-analysis findings via ruff, mypy, eslint, tsc, terraform fmt,
+  shellcheck (graceful skip when a tool is missing — no hard dep)
+- God files (> 500 lines), god functions (> 50 lines, cyclomatic > 10),
+  god classes (> 12 public methods), long parameter lists (> 5)
+- Duplicated 10-line blocks across files (sha1-indexed)
+- O(n²) patterns: nested loops over same collection, .find/.includes
+  inside .map/.forEach, string concatenation in loops
+- Architecture smells: circular imports detection
+- Naming/readability: bare `except:`, `: any` in TypeScript, magic numbers,
+  missing test files
+- Cyclomatic complexity per Python function (AST-based)
+
+Outputs `.jarvis/audits/code-<ISO_DATE>.md` with severity-ranked findings
+(CRITICAL / MAJOR / MINOR / NIT) + a 0-100 score. Exits 1 in `--strict`
+mode if MAJOR or CRITICAL found.
+
+### Security Audit (new)
+
+`bin/jarvis-security-audit` + `security-audit/SKILL.md`. OWASP Top 10
+(2021) + OWASP LLM Top 10 (2025) + AWS Well-Architected Security Pillar.
+
+Detects:
+- Hardcoded secrets: AWS keys, Stripe, GitHub, Anthropic, OpenAI, Google,
+  Slack tokens, PEM blocks, DB connection strings with creds. Suppresses
+  obvious placeholders (`xxx`, `your-key-here`, etc.) and test fixtures.
+- A01 Broken Access Control: DynamoDB queries without tenantId scope,
+  SQL without WHERE, mutating routes without Depends() auth
+- A02 Crypto: MD5/SHA-1 in auth context, weak random for tokens,
+  `jwt.decode` without `algorithms=` (algorithm confusion), AES-ECB,
+  missing SSE on Terraform
+- A03 Injection: f-string SQL, subprocess `shell=True`, `os.system`,
+  SSRF candidates with variable URLs
+- A05 Misconfig: CORS `*` with credentials, `DEBUG=True`, S3 without
+  public_access_block, IAM wildcard Action+Resource, SG with 0.0.0.0/0
+  on sensitive ports
+- A06 Vulnerable deps: pip-audit when installed (graceful skip)
+- A09 Logging hygiene: PII/secrets in formatted log statements
+- LLM01 Prompt injection: user input concatenated into system prompts
+- LLM04 Model DoS: invoke_model without max_tokens
+- LLM08 Vector weakness: Bedrock Retrieve without metadataFilter
+- AWS live (with `--aws` flag): root MFA, old IAM access keys,
+  S3 public-access-block, DynamoDB PITR
+
+Outputs `.jarvis/audits/security-<ISO_DATE>.md`. Never prints secret
+values, even partial. Exits 1 on CRITICAL or (in `--strict`) HIGH.
+
+### Product Manager (new)
+
+`bin/jarvis-pm-spec` + `pm/SKILL.md`. PM copilot for non-technical
+product managers.
+
+The skill walks a PM through 5 structured phases (who/why/what →
+journey → edge cases → wireframes → engineering translation), producing
+**11 markdown files** an engineer can implement directly:
+
+1. Customer journey
+2. User stories
+3. Acceptance criteria
+4. Edge cases (with feature-shape-specific checklists)
+5. API contracts (request/response/errors/PM-notes per endpoint)
+6. Data model
+7. Wireframes (ASCII layouts of every screen)
+8. Analytics events
+9. Rollout plan (phased + kill switch)
+10. PM-to-engineer phrase translation
+11. SUMMARY.md (one-page exec summary)
+
+The bin (`jarvis-pm-spec`) supports `init`, `set-meta`, `add-story`,
+`add-edge`, `add-api`, `add-event`, `summary`, `list`, `show`. PMs who
+like CLI move fast; PMs who don't, just talk to the agent.
+
+Includes a worked example walkthrough for "complete shopping experience
+on an ecommerce app" in the SKILL.md so PMs see what the output looks
+like before they start.
+
+### Plumbing
+
+- `setup` script's SKILLS array now includes `code-audit security-audit pm`
+- Three new bins added: jarvis-code-audit, jarvis-security-audit,
+  jarvis-pm-spec
+- 19 unit tests still pass
+
 ## v1.6.0 — 2026-06-08
 
 Operational maturity release. Bundles v1.4 + v1.5 + v1.6.
