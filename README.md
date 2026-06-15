@@ -12,8 +12,28 @@ curl -fsSL https://raw.githubusercontent.com/andrewuta99-coder/jarvis/main/insta
 
 ---
 
+## What's new in v1.7
+
+Jarvis isn't just for bootstrapping an AWS account anymore. The latest
+release adds four skills that show up the moment you install — covering
+the full path from "I have an idea" to "engineering can read the diff."
+
+| Skill | What it does | When to reach for it |
+|---|---|---|
+| [`/jarvis-pm`](#jarvis-pm--product-manager-copilot) | 5-phase PM interview → 11 markdown spec files (customer journey, user stories, acceptance criteria, edge cases, API contracts, data model, wireframes, analytics events, rollout plan, PM-to-engineer phrase glossary) | A non-technical PM has an idea and needs to hand engineering something they can implement directly |
+| [`/jarvis-prototype`](#jarvis-prototype--pm-to-clickable-react-in-minutes) | PM idea or `/jarvis-pm` spec → clickable React prototype in **your project's existing stack** (CRA/Next/Vite + Tailwind + lucide-react + react-router), with 22 curated design profiles and inline mock data so it runs with no backend | A stakeholder wants to *see* the feature today, before scoping |
+| [`/jarvis-code-audit`](#jarvis-code-audit--line-by-line-code-review) | Line-by-line audit against Google Style Guides + Anthropic engineering principles. Catches god functions, duplicated blocks, O(n²) patterns, magic numbers, cyclomatic complexity, naming issues. Severity-ranked report at `.jarvis/audits/code-<date>.md` | Pre-merge gate, quarterly drift check, onboarding to an unfamiliar repo |
+| [`/jarvis-security-audit`](#jarvis-security-audit--owasp--llm--aws) | OWASP Top 10 (2021) + OWASP LLM Top 10 (2025) + AWS Well-Architected Security Pillar. Detects hardcoded secrets, weak crypto, injection vectors, IAM wildcards, Terraform misconfig, prompt-injection patterns. `--aws` adds live account scan | Before shipping anything user-facing, before requesting a SOC2 letter, after touching auth |
+
+**Composes:** `/jarvis-pm "shopping experience"` → `/jarvis-prototype --from-spec` → `/jarvis-code-audit` → `/jarvis-security-audit`. A non-technical PM walks out with a spec, a working demo URL, and an engineering team that doesn't have to ask "what did you actually want?"
+
+Each skill is self-contained, documented in the [Command reference](#command-reference) below, and runnable today after `install.sh`.
+
+---
+
 ## Table of contents
 
+- [What's new in v1.7](#whats-new-in-v17)
 - [Install](#install)
 - [First-time setup — AWS credentials](#first-time-setup--aws-credentials)
 - [The 5-minute first run](#the-5-minute-first-run)
