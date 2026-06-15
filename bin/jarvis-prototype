@@ -1,0 +1,690 @@
+#!/usr/bin/env python3
+"""
+jarvis-prototype — detect the React stack, resolve the design system,
+and scaffold the prototype directory. The /jarvis-prototype skill calls
+this for the deterministic work; the LLM does the creative React
+generation per the SKILL.md prompt.
+
+Subcommands:
+    discover                Probe the frontend stack; emit JSON report
+    list-styles             List curated style profiles (table or --json)
+    show-style <id>         Print one style profile as JSON
+    match-style <desc>      Suggest a profile from a free-text description
+    init <slug>             Create src/prototypes/<slug>/ with stub files
+    verify <slug>           Run typecheck/lint against the prototype dir
+
+Usage examples:
+    jarvis-prototype discover --frontend-dir .
+    jarvis-prototype list-styles
+    jarvis-prototype show-style mortgage-lender
+    jarvis-prototype match-style "leads kanban for loan officers"
+    jarvis-prototype init leads-kanban --style mortgage-lender --lang js
+    jarvis-prototype verify leads-kanban
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# ─── Paths ────────────────────────────────────────────────────────────────
+SCRIPT_DIR = Path(__file__).resolve().parent
+JARVIS_DIR = SCRIPT_DIR.parent
+STYLES_FILE = JARVIS_DIR / "prototype" / "styles.json"
+
+
+def _load_styles() -> dict:
+    if not STYLES_FILE.exists():
+        return {"profiles": []}
+    try:
+        return json.loads(STYLES_FILE.read_text())
+    except json.JSONDecodeError as e:
+        print(f"error: styles.json is malformed: {e}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _profiles() -> list[dict]:
+    return _load_styles().get("profiles", [])
+
+
+def _find_profile(profile_id: str) -> dict | None:
+    for p in _profiles():
+        if p["id"] == profile_id:
+            return p
+    return None
+
+
+# ─── Frontend discovery ───────────────────────────────────────────────────
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _find_frontend_root(start: Path) -> Path | None:
+    """Walk down from `start` looking for a package.json with React.
+
+    Prefers the closest match; ignores node_modules, venv, build, dist.
+    """
+    if not start.exists():
+        return None
+    # First try start itself
+    pkg = start / "package.json"
+    if pkg.exists():
+        data = _read_json(pkg)
+        deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+        if "react" in deps:
+            return start
+
+    # Scan one level down
+    skip = {"node_modules", "venv", "venv311", "venv313", ".git", "build", "dist",
+            ".next", ".cache", "htmlcov", "__pycache__", "weights", "ai-model-testing"}
+    candidates: list[tuple[int, Path]] = []
+    for child in start.iterdir():
+        if not child.is_dir() or child.name in skip:
+            continue
+        for pkg in child.rglob("package.json"):
+            if any(part in skip for part in pkg.parts):
+                continue
+            depth = len(pkg.relative_to(start).parts)
+            if depth > 4:  # avoid deeply nested matches
+                continue
+            data = _read_json(pkg)
+            deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+            if "react" in deps:
+                candidates.append((depth, pkg.parent))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][1]
+
+
+def _detect_framework(root: Path, pkg: dict) -> str:
+    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    scripts = pkg.get("scripts", {})
+    if "next" in deps:
+        return "next"
+    if (root / "vite.config.js").exists() or (root / "vite.config.ts").exists() or "vite" in deps:
+        return "vite"
+    if "react-scripts" in deps:
+        return "cra"
+    if any("react-scripts" in v for v in scripts.values()):
+        return "cra"
+    return "unknown"
+
+
+def _detect_language(root: Path) -> str:
+    if (root / "tsconfig.json").exists():
+        return "ts"
+    # heuristic: more .tsx than .jsx?
+    tsx = len(list(root.rglob("src/**/*.tsx")))
+    jsx = len(list(root.rglob("src/**/*.jsx")))
+    js = len(list(root.rglob("src/**/*.js")))
+    if tsx > jsx + js:
+        return "ts"
+    return "js"
+
+
+def _detect_tailwind(root: Path) -> dict:
+    result: dict = {"tailwind": False, "config_path": None, "custom_theme_colors": {}}
+    for name in ("tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs"):
+        p = root / name
+        if p.exists():
+            result["tailwind"] = True
+            result["config_path"] = str(p.relative_to(root))
+            text = p.read_text(errors="ignore")
+            # naive extract of theme.extend.colors
+            m = re.search(r"colors\s*:\s*\{([^}]+)\}", text)
+            if m:
+                body = m.group(1)
+                for key, val in re.findall(r"['\"]?([a-zA-Z0-9_-]+)['\"]?\s*:\s*['\"](#[0-9A-Fa-f]+)['\"]", body):
+                    result["custom_theme_colors"][key] = val
+            return result
+    return result
+
+
+def _detect_icons(pkg: dict) -> str:
+    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    if "lucide-react" in deps:
+        return "lucide-react"
+    if any(k.startswith("@heroicons/react") for k in deps):
+        return "@heroicons/react"
+    if "react-icons" in deps:
+        return "react-icons"
+    if any(k.startswith("@radix-ui/react-icons") for k in deps):
+        return "@radix-ui/react-icons"
+    return "none"
+
+
+def _detect_routing(pkg: dict) -> str:
+    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    if "next" in deps:
+        # check for app router vs pages router
+        return "next-router"
+    rr = deps.get("react-router-dom")
+    if rr:
+        # try to extract major version
+        m = re.search(r"(\d+)", rr)
+        if m:
+            return f"react-router-dom@{m.group(1)}"
+        return "react-router-dom"
+    return "none"
+
+
+def _detect_state_libs(pkg: dict) -> list[str]:
+    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    found = []
+    if "zustand" in deps:
+        found.append("zustand")
+    if "redux" in deps or "@reduxjs/toolkit" in deps:
+        found.append("redux")
+    if "jotai" in deps:
+        found.append("jotai")
+    if "recoil" in deps:
+        found.append("recoil")
+    # ContextAPI is always available; mark it if there are *Context.js files
+    return found
+
+
+def _find_dir(root: Path, candidates: list[str]) -> str | None:
+    for c in candidates:
+        p = root / c
+        if p.exists() and p.is_dir():
+            return str(p.relative_to(root))
+    return None
+
+
+def _find_file_by_glob(root: Path, patterns: list[str]) -> str | None:
+    for pat in patterns:
+        matches = list(root.glob(pat))
+        for m in matches:
+            if "node_modules" in m.parts:
+                continue
+            return str(m.relative_to(root))
+    return None
+
+
+def _list_existing_components(root: Path, components_dir: str | None) -> list[str]:
+    if not components_dir:
+        return []
+    cdir = root / components_dir
+    if not cdir.exists():
+        return []
+    names = []
+    for ext in ("*.jsx", "*.tsx", "*.js", "*.ts"):
+        for f in cdir.rglob(ext):
+            if "node_modules" in f.parts:
+                continue
+            # Capitalized filenames = components by convention
+            name = f.stem
+            if name and name[0].isupper():
+                names.append(name)
+    return sorted(set(names))[:50]
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    start = Path(args.frontend_dir).resolve()
+    root = _find_frontend_root(start)
+    if not root:
+        out = {"found": False, "frontend_root": None,
+               "hint": "No package.json with React found. Try --frontend-dir <path>"}
+        print(json.dumps(out, indent=2))
+        return 0
+
+    pkg = _read_json(root / "package.json")
+    framework = _detect_framework(root, pkg)
+    language = _detect_language(root)
+    styling = _detect_tailwind(root)
+    icons = _detect_icons(pkg)
+    routing = _detect_routing(pkg)
+    state_libs = _detect_state_libs(pkg)
+
+    # Guess components/pages dirs based on common conventions
+    components_dir = _find_dir(root, [
+        "src/components",
+        "src/lender/components", "src/borrower/components", "src/admin/components",
+        "src/ui/components", "app/components", "components",
+    ])
+    pages_dir = _find_dir(root, [
+        "src/pages", "src/lender/pages", "src/borrower/pages",
+        "app", "pages",
+    ])
+
+    design_md_path = None
+    for cand in ("DESIGN.md", "docs/DESIGN.md", "design/DESIGN.md"):
+        p = root / cand
+        if p.exists():
+            design_md_path = str(p.relative_to(root))
+            break
+
+    theme_context = _find_file_by_glob(root, [
+        "src/**/ThemeContext.*", "src/**/ThemeProvider.*",
+    ])
+
+    out = {
+        "found": True,
+        "frontend_root": str(root),
+        "framework": framework,
+        "language": language,
+        "styling": styling,
+        "icons": icons,
+        "routing": routing,
+        "state_libs": state_libs,
+        "components_dir": components_dir,
+        "pages_dir": pages_dir,
+        "design_md_path": design_md_path,
+        "design_md_present": design_md_path is not None,
+        "theme_context_path": theme_context,
+        "existing_components": _list_existing_components(root, components_dir),
+    }
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+# ─── Style commands ───────────────────────────────────────────────────────
+
+def cmd_list_styles(args: argparse.Namespace) -> int:
+    profiles = _profiles()
+    if args.json:
+        print(json.dumps([{"id": p["id"], "name": p["name"], "best_for": p["best_for"]}
+                          for p in profiles], indent=2))
+        return 0
+    print(f"{'ID':<22} {'NAME':<22} BEST FOR")
+    print(f"{'-' * 22:<22} {'-' * 22:<22} {'-' * 50}")
+    for p in profiles:
+        best = ", ".join(p["best_for"][:3])
+        print(f"{p['id']:<22} {p['name']:<22} {best}")
+    print(f"\n{len(profiles)} profiles. Use --style <id> with /jarvis-prototype.")
+    return 0
+
+
+def cmd_show_style(args: argparse.Namespace) -> int:
+    p = _find_profile(args.id)
+    if not p:
+        print(f"error: no style profile with id '{args.id}'", file=sys.stderr)
+        print(f"hint: run `jarvis-prototype list-styles` to see all ids", file=sys.stderr)
+        return 2
+    print(json.dumps(p, indent=2))
+    return 0
+
+
+def cmd_match_style(args: argparse.Namespace) -> int:
+    """Match a free-text description to the best style profile."""
+    desc = " ".join(args.description).lower()
+
+    # Keyword-to-profile rules, ordered: most specific first.
+    rules: list[tuple[list[str], str]] = [
+        (["mortgage", "underwriting", "loan officer", "lender"], "mortgage-lender"),
+        (["realtor", "real estate", "open house", "listing", "property"], "realtor-warm"),
+        (["chat", "llm", "assistant", "agent", "prompt", "model"], "ai-product"),
+        (["dashboard", "analytics", "metrics", "kpi", "monitor", "ops"], "dashboard-dense"),
+        (["bank", "fintech", "credit", "tax", "invest"], "fintech-trust"),
+        (["ecommerce", "checkout", "cart", "store", "product catalog", "shop"], "ecommerce-vivid"),
+        (["patient", "telehealth", "wellness", "clinic", "doctor"], "healthcare-calm"),
+        (["education", "course", "tutor", "lesson", "lms", "student"], "education-friendly"),
+        (["developer", "cli", "logs", "infra", "devops", "kubernetes"], "devtools-terminal"),
+        (["fitness", "workout", "gym", "training", "sports"], "fitness-energy"),
+        (["law", "legal", "compliance", "contract", "audit"], "legal-formal"),
+        (["portfolio", "agency", "case study", "photography"], "creative-portfolio"),
+        (["blog", "essay", "documentation", "reading"], "minimal-text"),
+        (["mobile", "pwa", "phone"], "mobile-first"),
+        (["luxury", "premium", "hospitality", "spa", "estate", "resort"], "luxury-marketing"),
+        (["nonprofit", "donation", "advocacy", "community"], "nonprofit-warm"),
+        (["landing page", "waitlist", "pre-launch", "pitch"], "startup-pitch"),
+        (["enterprise", "procurement", "hr suite", "finance suite"], "enterprise-classic"),
+        (["brutalist", "indie", "design tool"], "brutalist-bold"),
+        (["glass", "frosted", "creative tool"], "glass-modern"),
+        (["data", "trading", "bi tool", "research"], "data-heavy"),
+        (["b2b", "saas", "admin", "internal tool", "workspace"], "clean-saas"),
+    ]
+
+    matches: list[tuple[int, str]] = []
+    for keywords, profile_id in rules:
+        score = sum(1 for kw in keywords if kw in desc)
+        if score > 0:
+            matches.append((score, profile_id))
+
+    if not matches:
+        chosen = "clean-saas"
+        reason = "no strong keyword match — defaulting to clean-saas"
+    else:
+        matches.sort(key=lambda x: -x[0])
+        chosen = matches[0][1]
+        reason = f"matched on {matches[0][0]} keyword(s)"
+
+    profile = _find_profile(chosen)
+    out = {
+        "match": chosen,
+        "name": profile["name"] if profile else chosen,
+        "best_for": profile.get("best_for", []) if profile else [],
+        "reason": reason,
+        "runner_ups": [m[1] for m in matches[1:4]],
+    }
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+# ─── Init: scaffold the prototype directory ───────────────────────────────
+
+def _slug_to_pascal(slug: str) -> str:
+    return "".join(word.capitalize() for word in re.split(r"[-_\s]+", slug) if word)
+
+
+def _stub_readme(slug: str, profile: dict, lang: str, description: str) -> str:
+    pascal = _slug_to_pascal(slug)
+    return f"""# Prototype: {pascal}
+
+> **Status:** mocked prototype, not production code. Generated by /jarvis-prototype.
+
+## What this is
+
+{description or 'A clickable React prototype to validate the design and flow before any backend work.'}
+
+## What's mocked
+
+- Inline mock data in `mock-data.{lang}` (no API calls)
+- No auth, no env vars
+- Routing snippet provided; not yet wired into the app router
+
+## Design system
+
+- **Profile:** `{profile['id']}` ({profile['name']})
+- **Best for:** {", ".join(profile['best_for'])}
+- **Typography:** {profile['typography']['display']} (display) / {profile['typography']['body']} (body)
+- **Primary color:** {profile['colors']['primary']}
+- **Accent color:** {profile['colors']['accent']}
+
+If `DESIGN.md` exists in the repo, tokens were drawn from there instead.
+See `styles.{lang}` for the exact resolved tokens used by this prototype.
+
+## How to preview
+
+```bash
+npm start  # or whatever the project uses
+```
+
+Then open: `http://localhost:3000/prototypes/{slug}`
+
+## How to wire into the app router
+
+Add one line to your router config:
+
+```jsx
+<Route path="/prototypes/{slug}" element={{<{pascal}Page />}} />
+```
+
+…with this import at the top:
+
+```jsx
+import {pascal}Page from './prototypes/{slug}/{pascal}Page';
+```
+
+## What to do next
+
+- **PM:** walk a stakeholder through the flow; collect reactions
+- **Designer:** audit colors/typography/spacing for project consistency
+- **Engineer:** decide to keep, fork, or rewrite. The mock data shows
+  exactly what shapes the real API needs to return.
+
+## Anti-patterns this prototype avoids (by design)
+
+{chr(10).join(f"- {p}" for p in profile.get('anti_patterns', []))}
+"""
+
+
+def _stub_styles(profile: dict, lang: str) -> str:
+    body = f"""// Resolved design tokens for this prototype.
+// Source: profile '{profile['id']}' from jarvis/prototype/styles.json.
+// If your project has DESIGN.md, the generator should use those tokens instead.
+
+export const tokens = {json.dumps({
+    "id": profile["id"],
+    "name": profile["name"],
+    "typography": profile["typography"],
+    "colors": profile["colors"],
+    "radius": profile["radius"],
+    "motion": profile["motion"],
+    "effects": profile["effects"],
+}, indent=2)};
+
+export const profile = {json.dumps({
+    "id": profile["id"],
+    "name": profile["name"],
+    "best_for": profile["best_for"],
+}, indent=2)};
+"""
+    return body
+
+
+def _stub_mock_data(lang: str) -> str:
+    return """// Mock fixtures for the prototype. Edit shapes here; the page
+// renders whatever this exports. Keep records realistic — varied
+// names, dates, statuses — so the demo feels real.
+
+export const records = [
+  // populate per the spec
+];
+"""
+
+
+def _stub_page(slug: str, profile: dict, lang: str) -> str:
+    pascal = _slug_to_pascal(slug)
+    ext = "jsx" if lang == "js" else "tsx"
+    return f"""// {pascal}Page — generated by /jarvis-prototype.
+// Style profile: {profile['id']} ({profile['name']})
+// Slug: {slug}
+//
+// REPLACE THIS STUB with the LLM-generated page per the SKILL.md prompt.
+// The /jarvis-prototype skill writes the real component over this file
+// after running `jarvis-prototype init`.
+
+import React from 'react';
+import {{ tokens }} from './styles';
+
+export default function {pascal}Page() {{
+  return (
+    <div style={{{{ fontFamily: tokens.typography.body, background: tokens.colors.background, color: tokens.colors.text, minHeight: '100vh' }}}}>
+      <div style={{{{ background: '#FEF3C7', borderBottom: '1px solid #FDE68A', padding: '8px 16px', fontSize: 14, color: '#92400E', display: 'flex', justifyContent: 'space-between' }}}}>
+        <span><strong>Prototype</strong> — mocked data, not production. Style: <code>{profile['id']}</code></span>
+        <span style={{{{ fontSize: 12, opacity: 0.7 }}}}>Generated by /jarvis-prototype</span>
+      </div>
+      <main style={{{{ padding: 32, maxWidth: 1200, margin: '0 auto' }}}}>
+        <h1 style={{{{ fontFamily: tokens.typography.display, fontSize: 36, fontWeight: 700, marginBottom: 16 }}}}>
+          {pascal} prototype
+        </h1>
+        <p style={{{{ color: tokens.colors.muted, fontSize: 16 }}}}>
+          Stub. Replace with the real component per the /jarvis-prototype prompt.
+        </p>
+      </main>
+    </div>
+  );
+}}
+"""
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    profile = _find_profile(args.style)
+    if not profile:
+        print(f"error: no style profile with id '{args.style}'. "
+              f"Run `jarvis-prototype list-styles`.", file=sys.stderr)
+        return 2
+    lang = args.lang or "js"
+    if lang not in ("js", "ts"):
+        print(f"error: --lang must be 'js' or 'ts'", file=sys.stderr)
+        return 2
+    ext = "jsx" if lang == "js" else "tsx"
+
+    frontend_root = Path(args.frontend_dir).resolve()
+    if not (frontend_root / "package.json").exists():
+        # Try one level deeper
+        found = _find_frontend_root(frontend_root)
+        if found:
+            frontend_root = found
+        else:
+            print(f"error: no frontend at {frontend_root}. "
+                  f"Pass --frontend-dir <path>.", file=sys.stderr)
+            return 2
+
+    src_dir = frontend_root / "src" / "prototypes" / args.slug
+    if src_dir.exists() and not args.force:
+        print(f"error: {src_dir} already exists. Use --force to overwrite "
+              f"or pick a different slug.", file=sys.stderr)
+        return 3
+
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "components").mkdir(exist_ok=True)
+
+    pascal = _slug_to_pascal(args.slug)
+
+    files_created = []
+
+    readme = src_dir / "README.md"
+    readme.write_text(_stub_readme(args.slug, profile, lang, args.description or ""))
+    files_created.append(str(readme.relative_to(frontend_root)))
+
+    styles = src_dir / f"styles.{lang}"
+    styles.write_text(_stub_styles(profile, lang))
+    files_created.append(str(styles.relative_to(frontend_root)))
+
+    mockd = src_dir / f"mock-data.{lang}"
+    mockd.write_text(_stub_mock_data(lang))
+    files_created.append(str(mockd.relative_to(frontend_root)))
+
+    page = src_dir / f"{pascal}Page.{ext}"
+    page.write_text(_stub_page(args.slug, profile, lang))
+    files_created.append(str(page.relative_to(frontend_root)))
+
+    out = {
+        "ok": True,
+        "frontend_root": str(frontend_root),
+        "prototype_dir": str(src_dir.relative_to(frontend_root)),
+        "slug": args.slug,
+        "page_component": f"{pascal}Page",
+        "language": lang,
+        "extension": ext,
+        "route_suggestion": f"/prototypes/{args.slug}",
+        "router_snippet": (
+            f"<Route path=\"/prototypes/{args.slug}\" "
+            f"element={{<{pascal}Page />}} />"
+        ),
+        "router_import": (
+            f"import {pascal}Page from './prototypes/{args.slug}/{pascal}Page';"
+        ),
+        "style_profile": {
+            "id": profile["id"],
+            "name": profile["name"],
+            "google_fonts_url": profile["typography"]["google_fonts_url"],
+        },
+        "files_created": files_created,
+        "next": "Replace the stub page/components with LLM-generated content per /jarvis-prototype SKILL.md.",
+    }
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+# ─── Verify ───────────────────────────────────────────────────────────────
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    frontend_root = Path(args.frontend_dir).resolve()
+    if not (frontend_root / "package.json").exists():
+        found = _find_frontend_root(frontend_root)
+        if found:
+            frontend_root = found
+    proto_dir = frontend_root / "src" / "prototypes" / args.slug
+    if not proto_dir.exists():
+        print(f"error: prototype dir not found at {proto_dir}", file=sys.stderr)
+        return 2
+
+    results: dict = {"slug": args.slug, "checks": []}
+
+    # Typecheck if TS project
+    if (frontend_root / "tsconfig.json").exists():
+        try:
+            res = subprocess.run(
+                ["npx", "--no-install", "tsc", "--noEmit", "--pretty", "false"],
+                cwd=str(frontend_root),
+                capture_output=True, text=True, timeout=180,
+            )
+            # Only count errors in the prototype dir
+            proto_rel = str(proto_dir.relative_to(frontend_root))
+            errors = [ln for ln in (res.stdout + res.stderr).splitlines()
+                      if proto_rel in ln and "error" in ln.lower()]
+            results["checks"].append({
+                "name": "typecheck",
+                "ok": len(errors) == 0,
+                "errors_in_prototype": errors[:20],
+            })
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            results["checks"].append({"name": "typecheck", "ok": None, "skipped": str(e)})
+
+    # ESLint on the prototype dir
+    try:
+        res = subprocess.run(
+            ["npx", "--no-install", "eslint", str(proto_dir)],
+            cwd=str(frontend_root),
+            capture_output=True, text=True, timeout=120,
+        )
+        results["checks"].append({
+            "name": "eslint",
+            "ok": res.returncode == 0,
+            "output_tail": "\n".join((res.stdout + res.stderr).splitlines()[-30:]),
+        })
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        results["checks"].append({"name": "eslint", "ok": None, "skipped": str(e)})
+
+    print(json.dumps(results, indent=2))
+    all_ok = all(c.get("ok") is not False for c in results["checks"])
+    return 0 if all_ok else 1
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="jarvis-prototype",
+        description="Detect React stack, resolve design tokens, scaffold prototype dirs.",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    d = sub.add_parser("discover", help="Probe the frontend stack; emit JSON.")
+    d.add_argument("--frontend-dir", default=".", help="Where to start looking. Default: cwd.")
+    d.set_defaults(func=cmd_discover)
+
+    ls = sub.add_parser("list-styles", help="List curated style profiles.")
+    ls.add_argument("--json", action="store_true", help="Output JSON.")
+    ls.set_defaults(func=cmd_list_styles)
+
+    ss = sub.add_parser("show-style", help="Print one style profile as JSON.")
+    ss.add_argument("id", help="Profile id (see list-styles).")
+    ss.set_defaults(func=cmd_show_style)
+
+    ms = sub.add_parser("match-style", help="Suggest a profile from a free-text description.")
+    ms.add_argument("description", nargs="+", help="The product/feature description.")
+    ms.set_defaults(func=cmd_match_style)
+
+    init = sub.add_parser("init", help="Scaffold src/prototypes/<slug>/ with stubs.")
+    init.add_argument("slug", help="kebab-case slug; also forms the page component name.")
+    init.add_argument("--style", required=True, help="Style profile id.")
+    init.add_argument("--lang", choices=["js", "ts"], default="js")
+    init.add_argument("--frontend-dir", default=".", help="Frontend root.")
+    init.add_argument("--description", default="", help="One-line description for the README.")
+    init.add_argument("--force", action="store_true", help="Overwrite an existing slug.")
+    init.set_defaults(func=cmd_init)
+
+    v = sub.add_parser("verify", help="Run typecheck + lint against the prototype dir.")
+    v.add_argument("slug", help="The slug to verify.")
+    v.add_argument("--frontend-dir", default=".", help="Frontend root.")
+    v.set_defaults(func=cmd_verify)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

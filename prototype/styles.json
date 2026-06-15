@@ -1,0 +1,665 @@
+{
+  "_meta": {
+    "version": 1,
+    "description": "Curated style profiles used by /jarvis-prototype when DESIGN.md is absent. Each profile is a complete design system — typography, color tokens, motion, spacing, effects, anti-patterns. The skill picks one based on the product description, or the PM picks by id with --style <id>."
+  },
+  "profiles": [
+    {
+      "id": "clean-saas",
+      "name": "Clean SaaS",
+      "best_for": ["B2B SaaS", "developer tools", "internal admin", "project management"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      },
+      "colors": {
+        "background": "#FFFFFF", "surface": "#F8FAFC", "border": "#E2E8F0",
+        "primary": "#2563EB", "accent": "#7C3AED",
+        "text": "#0F172A", "muted": "#64748B",
+        "success": "#10B981", "warning": "#F59E0B", "danger": "#EF4444"
+      },
+      "radius": {"sm": "0.25rem", "md": "0.5rem", "lg": "0.75rem"},
+      "motion": {"duration": "150ms", "easing": "cubic-bezier(0.4, 0, 0.2, 1)"},
+      "effects": {
+        "shadow": "0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04)",
+        "borders": "1px solid #E2E8F0",
+        "hover": "subtle background tint + 1px ring on focus"
+      },
+      "key_components": {
+        "button_primary": "bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium",
+        "card": "bg-white border border-slate-200 rounded-lg p-6",
+        "input": "border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+      },
+      "anti_patterns": ["no gradients on text", "no purple/pink AI gradients", "no glassmorphism", "no thick borders"]
+    },
+    {
+      "id": "dashboard-dense",
+      "name": "Dashboard Dense",
+      "best_for": ["analytics", "ops consoles", "trading screens", "monitoring", "back-office"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      },
+      "colors": {
+        "background": "#0B0F1A", "surface": "#111827", "border": "#1F2937",
+        "primary": "#3B82F6", "accent": "#10B981",
+        "text": "#F9FAFB", "muted": "#9CA3AF",
+        "success": "#10B981", "warning": "#F59E0B", "danger": "#EF4444"
+      },
+      "radius": {"sm": "0.125rem", "md": "0.25rem", "lg": "0.5rem"},
+      "motion": {"duration": "100ms", "easing": "ease-out"},
+      "effects": {
+        "shadow": "none — use border separation instead",
+        "borders": "1px solid #1F2937",
+        "hover": "row highlight: bg-gray-800"
+      },
+      "key_components": {
+        "button_primary": "bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium",
+        "card": "bg-gray-900 border border-gray-800 rounded p-4",
+        "table_row": "border-b border-gray-800 hover:bg-gray-800 text-sm"
+      },
+      "anti_patterns": ["no large empty space", "no decorative graphics", "no pastel colors", "no rounded > 0.5rem"]
+    },
+    {
+      "id": "fintech-trust",
+      "name": "Fintech Trust",
+      "best_for": ["banking", "investing", "lending", "insurance", "tax"],
+      "typography": {
+        "display": "IBM Plex Sans",
+        "body": "IBM Plex Sans",
+        "mono": "IBM Plex Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      },
+      "colors": {
+        "background": "#FFFFFF", "surface": "#F4F4F4", "border": "#E0E0E0",
+        "primary": "#0F62FE", "accent": "#005D5D",
+        "text": "#161616", "muted": "#525252",
+        "success": "#198038", "warning": "#F1C21B", "danger": "#DA1E28"
+      },
+      "radius": {"sm": "0", "md": "0", "lg": "0.125rem"},
+      "motion": {"duration": "200ms", "easing": "cubic-bezier(0.2, 0, 0.38, 0.9)"},
+      "effects": {
+        "shadow": "none",
+        "borders": "1px solid #E0E0E0",
+        "hover": "underline only, no fill change"
+      },
+      "key_components": {
+        "button_primary": "bg-[#0F62FE] hover:bg-[#0353E9] text-white px-4 py-2.5 text-sm font-medium",
+        "card": "bg-white border border-gray-200 p-6",
+        "input": "border-b-2 border-gray-300 bg-gray-50 px-3 py-2 focus:border-[#0F62FE]"
+      },
+      "anti_patterns": ["no rounded corners > 2px", "no gradients", "no playful illustrations", "no shadows"]
+    },
+    {
+      "id": "luxury-marketing",
+      "name": "Luxury Marketing",
+      "best_for": ["luxury brands", "real estate marketing", "premium services", "wellness", "hospitality"],
+      "typography": {
+        "display": "Cormorant Garamond",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter:wght@400;500&display=swap"
+      },
+      "colors": {
+        "background": "#FBF8F3", "surface": "#FFFFFF", "border": "#E8E0D5",
+        "primary": "#1A1A1A", "accent": "#C9A961",
+        "text": "#1A1A1A", "muted": "#6B6258",
+        "success": "#5C8A6A", "warning": "#C9A961", "danger": "#9B3B3B"
+      },
+      "radius": {"sm": "0", "md": "0.125rem", "lg": "0.25rem"},
+      "motion": {"duration": "500ms", "easing": "cubic-bezier(0.65, 0, 0.35, 1)"},
+      "effects": {
+        "shadow": "0 20px 40px rgba(0,0,0,0.04)",
+        "borders": "1px solid #E8E0D5",
+        "hover": "slow fade, letter-spacing increase on CTAs"
+      },
+      "key_components": {
+        "button_primary": "border border-black bg-transparent text-black px-8 py-3 tracking-widest uppercase text-xs hover:bg-black hover:text-white transition-all duration-500",
+        "card": "bg-white p-12",
+        "hero_text": "font-serif text-6xl leading-tight"
+      },
+      "anti_patterns": ["no sans-serif on headlines", "no bright colors", "no quick animations", "no SaaS-style cards"]
+    },
+    {
+      "id": "mortgage-lender",
+      "name": "Mortgage Lender",
+      "best_for": ["mortgage", "loan officer dashboards", "CloudMortgage features", "underwriting tools"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      },
+      "colors": {
+        "background": "#FFFFFF", "surface": "#F8FAFC", "border": "#E2E8F0",
+        "primary": "#0F766E", "accent": "#0EA5E9",
+        "text": "#0F172A", "muted": "#64748B",
+        "success": "#15803D", "warning": "#D97706", "danger": "#DC2626"
+      },
+      "radius": {"sm": "0.375rem", "md": "0.5rem", "lg": "0.75rem"},
+      "motion": {"duration": "200ms", "easing": "ease-out"},
+      "effects": {
+        "shadow": "0 1px 3px rgba(15,23,42,0.08)",
+        "borders": "1px solid #E2E8F0",
+        "hover": "background tint shift to slate-50"
+      },
+      "key_components": {
+        "button_primary": "bg-teal-700 hover:bg-teal-800 text-white px-4 py-2 rounded-md text-sm font-medium",
+        "card": "bg-white border border-slate-200 rounded-lg p-6 shadow-sm",
+        "status_pill": "inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium",
+        "kpi_card": "bg-white rounded-lg border p-5 with large number + label + delta"
+      },
+      "anti_patterns": ["no flashy gradients", "no playful illustrations", "no consumer-marketing vibes", "no dark mode default"]
+    },
+    {
+      "id": "realtor-warm",
+      "name": "Realtor Warm",
+      "best_for": ["real estate agents", "listing pages", "agent directories", "open houses"],
+      "typography": {
+        "display": "Playfair Display",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Inter:wght@400;500;600&display=swap"
+      },
+      "colors": {
+        "background": "#FDFBF7", "surface": "#FFFFFF", "border": "#E8DFD3",
+        "primary": "#9B4D3B", "accent": "#D4A574",
+        "text": "#2C2419", "muted": "#7A6F5F",
+        "success": "#6B8E5A", "warning": "#D4A574", "danger": "#9B3B3B"
+      },
+      "radius": {"sm": "0.25rem", "md": "0.5rem", "lg": "1rem"},
+      "motion": {"duration": "300ms", "easing": "ease-in-out"},
+      "effects": {
+        "shadow": "0 4px 12px rgba(44,36,25,0.08)",
+        "borders": "1px solid #E8DFD3",
+        "hover": "lift effect — translate-y-[-2px]"
+      },
+      "key_components": {
+        "button_primary": "bg-[#9B4D3B] hover:bg-[#7A3B2D] text-white px-6 py-3 rounded-md text-sm font-medium tracking-wide",
+        "card": "bg-white rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow",
+        "property_image": "rounded-lg aspect-[4/3] object-cover"
+      },
+      "anti_patterns": ["no dark mode", "no neon accents", "no tech-bro typography", "no dense data tables"]
+    },
+    {
+      "id": "brutalist-bold",
+      "name": "Brutalist Bold",
+      "best_for": ["creator tools", "indie startups", "design tools", "portfolios"],
+      "typography": {
+        "display": "Space Grotesk",
+        "body": "Space Grotesk",
+        "mono": "Space Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap"
+      },
+      "colors": {
+        "background": "#FFFEF5", "surface": "#FFFFFF", "border": "#000000",
+        "primary": "#000000", "accent": "#FF4422",
+        "text": "#000000", "muted": "#666666",
+        "success": "#00A36C", "warning": "#FFB800", "danger": "#FF4422"
+      },
+      "radius": {"sm": "0", "md": "0", "lg": "0"},
+      "motion": {"duration": "0ms", "easing": "step-end"},
+      "effects": {
+        "shadow": "4px 4px 0 #000000 (hard offset shadow)",
+        "borders": "2px solid #000000",
+        "hover": "shadow translates — shadow becomes 0px 0px while card moves to where shadow was"
+      },
+      "key_components": {
+        "button_primary": "bg-[#FF4422] hover:bg-[#E63A1A] border-2 border-black text-white px-6 py-3 font-bold uppercase shadow-[4px_4px_0_#000] hover:shadow-[2px_2px_0_#000] transition-all",
+        "card": "bg-white border-2 border-black p-6 shadow-[6px_6px_0_#000]"
+      },
+      "anti_patterns": ["no rounded corners", "no soft shadows", "no gradients", "no muted colors"]
+    },
+    {
+      "id": "glass-modern",
+      "name": "Glass Modern",
+      "best_for": ["AI products", "creative tools", "consumer apps", "music apps"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      },
+      "colors": {
+        "background": "linear-gradient(135deg, #1E1B4B 0%, #312E81 50%, #1E40AF 100%)",
+        "surface": "rgba(255,255,255,0.08)",
+        "border": "rgba(255,255,255,0.15)",
+        "primary": "#A78BFA", "accent": "#22D3EE",
+        "text": "#F9FAFB", "muted": "rgba(255,255,255,0.6)",
+        "success": "#34D399", "warning": "#FBBF24", "danger": "#F87171"
+      },
+      "radius": {"sm": "0.5rem", "md": "1rem", "lg": "1.5rem"},
+      "motion": {"duration": "300ms", "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      "effects": {
+        "shadow": "0 8px 32px rgba(0,0,0,0.3)",
+        "borders": "1px solid rgba(255,255,255,0.15)",
+        "hover": "backdrop blur intensifies, gentle scale-105"
+      },
+      "key_components": {
+        "button_primary": "bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 text-white px-5 py-2.5 rounded-xl font-medium transition-all",
+        "card": "bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6"
+      },
+      "anti_patterns": ["no sharp corners", "no opaque backgrounds", "no muted typography"]
+    },
+    {
+      "id": "mobile-first",
+      "name": "Mobile First",
+      "best_for": ["consumer mobile apps", "PWAs", "field tools", "delivery apps"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      },
+      "colors": {
+        "background": "#F9FAFB", "surface": "#FFFFFF", "border": "#E5E7EB",
+        "primary": "#6366F1", "accent": "#EC4899",
+        "text": "#111827", "muted": "#6B7280",
+        "success": "#10B981", "warning": "#F59E0B", "danger": "#EF4444"
+      },
+      "radius": {"sm": "0.5rem", "md": "1rem", "lg": "1.5rem"},
+      "motion": {"duration": "200ms", "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      "effects": {
+        "shadow": "0 4px 12px rgba(0,0,0,0.05)",
+        "borders": "none — use surface elevation",
+        "hover": "scale-active:scale-95 (tap feedback)"
+      },
+      "key_components": {
+        "button_primary": "bg-indigo-500 active:bg-indigo-600 active:scale-95 text-white px-6 py-4 rounded-2xl text-base font-semibold w-full transition-transform",
+        "card": "bg-white rounded-2xl p-5 shadow-sm",
+        "bottom_nav": "fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-4 py-2 flex justify-around"
+      },
+      "anti_patterns": ["no hover-only interactions", "no tiny touch targets (< 44px)", "no horizontal scrolling tables", "no desktop-style modals"]
+    },
+    {
+      "id": "data-heavy",
+      "name": "Data Heavy",
+      "best_for": ["BI tools", "trading platforms", "research dashboards", "data products"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      },
+      "colors": {
+        "background": "#FAFAFA", "surface": "#FFFFFF", "border": "#E5E5E5",
+        "primary": "#1D4ED8", "accent": "#059669",
+        "text": "#171717", "muted": "#737373",
+        "success": "#059669", "warning": "#D97706", "danger": "#DC2626"
+      },
+      "radius": {"sm": "0.125rem", "md": "0.25rem", "lg": "0.375rem"},
+      "motion": {"duration": "100ms", "easing": "linear"},
+      "effects": {
+        "shadow": "none",
+        "borders": "1px solid #E5E5E5",
+        "hover": "row highlight only"
+      },
+      "key_components": {
+        "button_primary": "bg-blue-700 hover:bg-blue-800 text-white px-3 py-1.5 rounded text-sm font-medium",
+        "kpi_card": "bg-white border border-gray-200 rounded p-4 — small label, large number, small delta",
+        "table_row": "border-b border-gray-100 hover:bg-gray-50 text-sm tabular-nums",
+        "chart_palette": "Recharts: ['#1D4ED8', '#059669', '#D97706', '#DC2626', '#7C3AED', '#0891B2']"
+      },
+      "anti_patterns": ["no large empty space", "no decorative gradients", "no playful animations on number changes (use tabular-nums)"]
+    },
+    {
+      "id": "healthcare-calm",
+      "name": "Healthcare Calm",
+      "best_for": ["patient portals", "telehealth", "EHR-adjacent tools", "wellness"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      },
+      "colors": {
+        "background": "#F7FAFC", "surface": "#FFFFFF", "border": "#E2E8F0",
+        "primary": "#0EA5E9", "accent": "#10B981",
+        "text": "#1E293B", "muted": "#64748B",
+        "success": "#059669", "warning": "#D97706", "danger": "#DC2626"
+      },
+      "radius": {"sm": "0.5rem", "md": "0.75rem", "lg": "1rem"},
+      "motion": {"duration": "300ms", "easing": "ease-out"},
+      "effects": {
+        "shadow": "0 2px 8px rgba(15,23,42,0.06)",
+        "borders": "1px solid #E2E8F0",
+        "hover": "gentle background lift"
+      },
+      "key_components": {
+        "button_primary": "bg-sky-500 hover:bg-sky-600 text-white px-5 py-2.5 rounded-lg text-sm font-medium",
+        "card": "bg-white rounded-xl border border-slate-200 p-6"
+      },
+      "anti_patterns": ["no urgent reds for non-emergencies", "no dense data", "no aggressive CTAs", "no dark mode default"]
+    },
+    {
+      "id": "devtools-terminal",
+      "name": "Devtools Terminal",
+      "best_for": ["CLI dashboards", "developer platforms", "logs/monitoring", "infra tools"],
+      "typography": {
+        "display": "JetBrains Mono",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      },
+      "colors": {
+        "background": "#0D1117", "surface": "#161B22", "border": "#30363D",
+        "primary": "#58A6FF", "accent": "#A371F7",
+        "text": "#C9D1D9", "muted": "#8B949E",
+        "success": "#3FB950", "warning": "#D29922", "danger": "#F85149"
+      },
+      "radius": {"sm": "0.25rem", "md": "0.375rem", "lg": "0.5rem"},
+      "motion": {"duration": "100ms", "easing": "linear"},
+      "effects": {
+        "shadow": "none",
+        "borders": "1px solid #30363D",
+        "hover": "border lights up to #58A6FF"
+      },
+      "key_components": {
+        "button_primary": "bg-[#238636] hover:bg-[#2EA043] text-white px-3 py-1.5 rounded-md text-sm font-medium",
+        "card": "bg-[#161B22] border border-[#30363D] rounded-md p-4",
+        "code_block": "font-mono text-sm bg-[#0D1117] border border-[#30363D] rounded p-3 text-[#C9D1D9]"
+      },
+      "anti_patterns": ["no decorative imagery", "no soft pastels", "no dense marketing copy"]
+    },
+    {
+      "id": "ecommerce-vivid",
+      "name": "Ecommerce Vivid",
+      "best_for": ["DTC brands", "marketplaces", "checkout flows", "product catalogs"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap"
+      },
+      "colors": {
+        "background": "#FFFFFF", "surface": "#F9FAFB", "border": "#E5E7EB",
+        "primary": "#000000", "accent": "#F97316",
+        "text": "#111827", "muted": "#6B7280",
+        "success": "#10B981", "warning": "#F59E0B", "danger": "#EF4444"
+      },
+      "radius": {"sm": "0.25rem", "md": "0.5rem", "lg": "0.75rem"},
+      "motion": {"duration": "200ms", "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      "effects": {
+        "shadow": "0 4px 16px rgba(0,0,0,0.06)",
+        "borders": "1px solid #E5E7EB",
+        "hover": "scale-105 on product cards"
+      },
+      "key_components": {
+        "button_primary": "bg-black hover:bg-gray-800 text-white px-6 py-3 rounded-lg text-sm font-semibold uppercase tracking-wide",
+        "product_card": "bg-white rounded-lg overflow-hidden border border-gray-200 hover:shadow-lg transition-shadow",
+        "price_badge": "text-2xl font-bold"
+      },
+      "anti_patterns": ["no muted backgrounds for products", "no small images", "no thin fonts on CTAs"]
+    },
+    {
+      "id": "legal-formal",
+      "name": "Legal Formal",
+      "best_for": ["law firms", "compliance", "contracts", "audit reports"],
+      "typography": {
+        "display": "Source Serif Pro",
+        "body": "Source Sans Pro",
+        "mono": "Source Code Pro",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Source+Serif+Pro:wght@400;600;700&family=Source+Sans+Pro:wght@400;600&display=swap"
+      },
+      "colors": {
+        "background": "#FFFFFF", "surface": "#F8F9FA", "border": "#DEE2E6",
+        "primary": "#1A365D", "accent": "#744210",
+        "text": "#1A202C", "muted": "#4A5568",
+        "success": "#276749", "warning": "#9C4221", "danger": "#742A2A"
+      },
+      "radius": {"sm": "0", "md": "0.125rem", "lg": "0.25rem"},
+      "motion": {"duration": "150ms", "easing": "ease"},
+      "effects": {
+        "shadow": "none",
+        "borders": "1px solid #DEE2E6",
+        "hover": "underline links only"
+      },
+      "key_components": {
+        "button_primary": "bg-[#1A365D] hover:bg-[#0F2347] text-white px-5 py-2.5 text-sm font-medium",
+        "card": "bg-white border border-gray-300 p-8",
+        "document_body": "font-serif text-base leading-relaxed max-w-prose"
+      },
+      "anti_patterns": ["no playful colors", "no rounded corners", "no emoji", "no consumer-style CTAs"]
+    },
+    {
+      "id": "education-friendly",
+      "name": "Education Friendly",
+      "best_for": ["edtech", "courses", "tutoring", "kids learning", "LMS"],
+      "typography": {
+        "display": "Quicksand",
+        "body": "Nunito",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&family=Nunito:wght@400;600;700&display=swap"
+      },
+      "colors": {
+        "background": "#FFFBF5", "surface": "#FFFFFF", "border": "#FFE0B2",
+        "primary": "#FF6B35", "accent": "#4ECDC4",
+        "text": "#2D3436", "muted": "#636E72",
+        "success": "#26DE81", "warning": "#FED330", "danger": "#FC5C65"
+      },
+      "radius": {"sm": "0.5rem", "md": "1rem", "lg": "1.5rem"},
+      "motion": {"duration": "300ms", "easing": "cubic-bezier(0.34, 1.56, 0.64, 1)"},
+      "effects": {
+        "shadow": "0 8px 24px rgba(255,107,53,0.15)",
+        "borders": "2px solid #FFE0B2",
+        "hover": "playful bounce + color shift"
+      },
+      "key_components": {
+        "button_primary": "bg-[#FF6B35] hover:bg-[#FF8050] text-white px-6 py-3 rounded-2xl font-bold transition-transform hover:scale-105",
+        "card": "bg-white rounded-3xl p-6 border-2 border-orange-100"
+      },
+      "anti_patterns": ["no dense data tables", "no corporate gray", "no thin fonts"]
+    },
+    {
+      "id": "fitness-energy",
+      "name": "Fitness Energy",
+      "best_for": ["fitness", "workout apps", "sports", "health tracking"],
+      "typography": {
+        "display": "Bebas Neue",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&display=swap"
+      },
+      "colors": {
+        "background": "#0A0A0A", "surface": "#1A1A1A", "border": "#2A2A2A",
+        "primary": "#FF3D00", "accent": "#00E676",
+        "text": "#FFFFFF", "muted": "#999999",
+        "success": "#00E676", "warning": "#FFAB00", "danger": "#FF3D00"
+      },
+      "radius": {"sm": "0.25rem", "md": "0.5rem", "lg": "1rem"},
+      "motion": {"duration": "150ms", "easing": "cubic-bezier(0.4, 0, 0.2, 1)"},
+      "effects": {
+        "shadow": "0 0 32px rgba(255,61,0,0.3)",
+        "borders": "1px solid #2A2A2A",
+        "hover": "neon glow on primary CTAs"
+      },
+      "key_components": {
+        "button_primary": "bg-[#FF3D00] hover:bg-[#FF5722] text-white px-8 py-4 rounded-md font-bold uppercase tracking-wider",
+        "card": "bg-[#1A1A1A] border border-[#2A2A2A] rounded-lg p-6",
+        "stat_number": "font-display text-6xl tracking-tight"
+      },
+      "anti_patterns": ["no pastels", "no thin weights on numbers", "no sleepy animations"]
+    },
+    {
+      "id": "ai-product",
+      "name": "AI Product",
+      "best_for": ["AI assistants", "LLM apps", "chat interfaces", "ML platforms"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      },
+      "colors": {
+        "background": "#FAFAFA", "surface": "#FFFFFF", "border": "#E5E5E5",
+        "primary": "#000000", "accent": "#FF6B35",
+        "text": "#0A0A0A", "muted": "#666666",
+        "success": "#16A34A", "warning": "#EAB308", "danger": "#DC2626"
+      },
+      "radius": {"sm": "0.375rem", "md": "0.75rem", "lg": "1rem"},
+      "motion": {"duration": "200ms", "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      "effects": {
+        "shadow": "0 2px 8px rgba(0,0,0,0.04)",
+        "borders": "1px solid #E5E5E5",
+        "hover": "subtle background tint, stream-in animations for chat"
+      },
+      "key_components": {
+        "button_primary": "bg-black hover:bg-gray-800 text-white px-4 py-2 rounded-lg text-sm font-medium",
+        "chat_bubble_user": "bg-gray-100 rounded-2xl rounded-tr-md px-4 py-2.5 max-w-prose ml-auto",
+        "chat_bubble_ai": "bg-white border border-gray-200 rounded-2xl rounded-tl-md px-4 py-2.5 max-w-prose",
+        "thinking_indicator": "three pulsing dots, 1s duration"
+      },
+      "anti_patterns": ["no purple/pink AI gradients", "no overly sci-fi imagery", "no neon", "no animated mesh gradients"]
+    },
+    {
+      "id": "nonprofit-warm",
+      "name": "Nonprofit Warm",
+      "best_for": ["nonprofits", "donation flows", "advocacy", "community"],
+      "typography": {
+        "display": "Merriweather",
+        "body": "Open Sans",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Merriweather:wght@400;700&family=Open+Sans:wght@400;600&display=swap"
+      },
+      "colors": {
+        "background": "#FBF7EF", "surface": "#FFFFFF", "border": "#E8DCC0",
+        "primary": "#C2410C", "accent": "#15803D",
+        "text": "#1C1917", "muted": "#57534E",
+        "success": "#16A34A", "warning": "#CA8A04", "danger": "#B91C1C"
+      },
+      "radius": {"sm": "0.25rem", "md": "0.5rem", "lg": "0.75rem"},
+      "motion": {"duration": "250ms", "easing": "ease-out"},
+      "effects": {
+        "shadow": "0 4px 12px rgba(28,25,23,0.08)",
+        "borders": "1px solid #E8DCC0",
+        "hover": "warm tint shift"
+      },
+      "key_components": {
+        "button_primary": "bg-orange-700 hover:bg-orange-800 text-white px-6 py-3 rounded-md font-semibold",
+        "donation_card": "bg-white border-2 border-orange-200 rounded-lg p-6 hover:border-orange-400"
+      },
+      "anti_patterns": ["no corporate gray", "no aggressive CTAs", "no dark mode default"]
+    },
+    {
+      "id": "startup-pitch",
+      "name": "Startup Pitch",
+      "best_for": ["landing pages", "investor demos", "pre-launch waitlists", "Y Combinator-style"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+      },
+      "colors": {
+        "background": "#FFFFFF", "surface": "#FAFAFA", "border": "#E5E5E5",
+        "primary": "#FF5722", "accent": "#000000",
+        "text": "#0A0A0A", "muted": "#525252",
+        "success": "#16A34A", "warning": "#F59E0B", "danger": "#DC2626"
+      },
+      "radius": {"sm": "0.25rem", "md": "0.5rem", "lg": "0.75rem"},
+      "motion": {"duration": "200ms", "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      "effects": {
+        "shadow": "0 1px 3px rgba(0,0,0,0.06)",
+        "borders": "1px solid #E5E5E5",
+        "hover": "scale-105 on hero CTA"
+      },
+      "key_components": {
+        "button_primary": "bg-[#FF5722] hover:bg-[#E64A19] text-white px-6 py-3 rounded-md font-semibold",
+        "hero_headline": "text-6xl font-extrabold leading-[0.95] tracking-tight",
+        "card": "bg-white rounded-lg border border-gray-200 p-6"
+      },
+      "anti_patterns": ["no enterprise-style menus", "no decorative illustrations", "no thin weights on hero"]
+    },
+    {
+      "id": "enterprise-classic",
+      "name": "Enterprise Classic",
+      "best_for": ["enterprise B2B", "procurement", "internal tools at scale", "HR/finance suites"],
+      "typography": {
+        "display": "Inter",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      },
+      "colors": {
+        "background": "#F4F5F7", "surface": "#FFFFFF", "border": "#DFE1E6",
+        "primary": "#0052CC", "accent": "#36B37E",
+        "text": "#172B4D", "muted": "#6B778C",
+        "success": "#36B37E", "warning": "#FFAB00", "danger": "#DE350B"
+      },
+      "radius": {"sm": "0.1875rem", "md": "0.25rem", "lg": "0.5rem"},
+      "motion": {"duration": "100ms", "easing": "ease"},
+      "effects": {
+        "shadow": "0 1px 2px rgba(9,30,66,0.08)",
+        "borders": "1px solid #DFE1E6",
+        "hover": "background tint to #EBECF0"
+      },
+      "key_components": {
+        "button_primary": "bg-[#0052CC] hover:bg-[#0747A6] text-white px-3.5 py-1.5 rounded-sm text-sm font-medium",
+        "card": "bg-white border border-[#DFE1E6] rounded p-5"
+      },
+      "anti_patterns": ["no large hero animations", "no neon", "no playful illustrations"]
+    },
+    {
+      "id": "creative-portfolio",
+      "name": "Creative Portfolio",
+      "best_for": ["designer portfolios", "agency sites", "creative case studies", "photography"],
+      "typography": {
+        "display": "DM Serif Display",
+        "body": "Inter",
+        "mono": "JetBrains Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500&display=swap"
+      },
+      "colors": {
+        "background": "#0F0F0F", "surface": "#1A1A1A", "border": "#2A2A2A",
+        "primary": "#F5F5F5", "accent": "#FFE600",
+        "text": "#F5F5F5", "muted": "#888888",
+        "success": "#10B981", "warning": "#F59E0B", "danger": "#EF4444"
+      },
+      "radius": {"sm": "0", "md": "0", "lg": "0"},
+      "motion": {"duration": "600ms", "easing": "cubic-bezier(0.65, 0, 0.35, 1)"},
+      "effects": {
+        "shadow": "none",
+        "borders": "1px solid #2A2A2A",
+        "hover": "image scale 1.05 over 600ms"
+      },
+      "key_components": {
+        "button_primary": "border border-white bg-transparent text-white px-8 py-3 tracking-widest uppercase text-xs hover:bg-white hover:text-black transition-all duration-500",
+        "case_study_image": "w-full aspect-video object-cover hover:scale-105 transition-transform duration-700"
+      },
+      "anti_patterns": ["no rounded corners", "no SaaS-style cards", "no busy UI chrome"]
+    },
+    {
+      "id": "minimal-text",
+      "name": "Minimal Text",
+      "best_for": ["blogs", "documentation", "essays", "reading-first products"],
+      "typography": {
+        "display": "Charter",
+        "body": "Charter",
+        "mono": "Berkeley Mono",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&family=Inter:wght@400;500&display=swap"
+      },
+      "colors": {
+        "background": "#FFFFFF", "surface": "#FAFAFA", "border": "#E5E5E5",
+        "primary": "#0A0A0A", "accent": "#0066CC",
+        "text": "#1A1A1A", "muted": "#666666",
+        "success": "#16A34A", "warning": "#CA8A04", "danger": "#DC2626"
+      },
+      "radius": {"sm": "0", "md": "0.125rem", "lg": "0.25rem"},
+      "motion": {"duration": "150ms", "easing": "ease"},
+      "effects": {
+        "shadow": "none",
+        "borders": "1px solid #E5E5E5",
+        "hover": "link underline"
+      },
+      "key_components": {
+        "button_primary": "bg-black hover:bg-gray-800 text-white px-4 py-2 rounded text-sm",
+        "prose": "max-w-[65ch] mx-auto font-serif text-lg leading-[1.7] text-gray-900"
+      },
+      "anti_patterns": ["no busy sidebars", "no decorative imagery", "no animated elements while reading"]
+    }
+  ]
+}

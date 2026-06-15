@@ -91,7 +91,7 @@ SKILLS=(
   add-jobs add-realtime add-phone add-domain
   deploy rollback doctor cost scale backup adopt eject
   upgrade careful freeze
-  code-audit security-audit pm
+  code-audit security-audit pm prototype
 )
 
 # Clean up any stale jarvis-* symlinks from prior installs before re-linking.

@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.7.1 — 2026-06-14
+
+PM-to-clickable-React skill.
+
+### Prototype (new)
+
+`bin/jarvis-prototype` + `prototype/SKILL.md`. Turn a one-liner or a
+`/jarvis-pm` spec into a working, beautiful React prototype the team
+can click through — in the project's existing stack, with mocked
+data and a routable demo page. Designed so a non-technical PM ships
+a polished demo URL in under 10 minutes.
+
+What it does:
+
+- **Discovery** — probes the frontend (CRA / Next / Vite + Tailwind +
+  lucide-react / heroicons + react-router) so generated code drops
+  cleanly into the project's conventions. Reads `tailwind.config.js`
+  for custom theme colors. Finds `DESIGN.md` if present.
+- **Design system resolution** — three-tier priority: project's
+  `DESIGN.md` first, then `tailwind.config.js` custom colors, then a
+  curated profile from `prototype/styles.json`. Never invents tokens
+  that conflict with the team's system.
+- **Curated style library** — 22 complete design profiles (typography
+  pair via Google Fonts, color tokens, motion, radius scale, effects,
+  anti-patterns). Covers fintech, mortgage, realtor, AI products,
+  ecommerce, healthcare, dashboards, mobile-first, brutalist,
+  glass-modern, devtools, and more. Each profile is a complete system
+  — not just a color palette.
+- **Match-by-description** — `match-style "leads kanban for loan
+  officers"` returns the best-matching profile with runner-ups so the
+  PM can pick a different vibe in one flag.
+- **Scaffolding** — `init <slug>` lays down `src/prototypes/<slug>/`
+  with README, the page component, a components directory, mock-data
+  helper, and a `styles.js` exporting the resolved tokens. The LLM
+  then fills the page per the SKILL.md prompt.
+- **Quality bar baked in** — every prototype gets the "mocked data, not
+  production" banner, accessibility rules (focus states, 44px touch
+  targets, alt text, contrast), and a self-documenting README so
+  engineering knows exactly what's mocked vs. what needs wiring.
+- **Verify** — `verify <slug>` runs typecheck + eslint scoped to the
+  prototype directory only.
+- **Anti-patterns** — refuses to modify the app's router, refuses to
+  introduce new design tokens if `DESIGN.md` exists, refuses to use
+  generic lorem ipsum, refuses to ship without the prototype banner.
+
+Composes with `/jarvis-pm` (read its spec via `--from-spec`) and the
+gstack `/design-review` skill (audit visual polish after generation).
+
 ## v1.7.0 — 2026-06-14
 
 Three new audit + product skills.

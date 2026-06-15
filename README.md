@@ -413,6 +413,57 @@ jarvis-pm-spec summary shopping-experience
 Output lands under `.jarvis/pm/<slug>/`. Hand the folder to engineering;
 they read SUMMARY.md and have at most 3-5 clarifying questions.
 
+### `/jarvis-prototype` — PM-to-clickable-React in minutes
+
+A non-technical PM has an idea ("a kanban board for our loan officers")
+or a `/jarvis-pm` spec, and wants a **polished, clickable prototype**
+the team can react to today. This skill produces React code that drops
+into the project's existing stack — Tailwind / lucide-react /
+react-router, whatever you already use — picks (or accepts) a complete
+design system, ships mock data inline so it runs with no backend, and
+puts a loud "PROTOTYPE — not production" banner on every page so it
+can never be mistaken for shipped product.
+
+```bash
+# From a one-liner
+/jarvis-prototype "leads kanban for loan officers"
+
+# From a PM spec
+/jarvis-prototype --from-spec .jarvis/pm/leads-kanban/SUMMARY.md
+
+# Pick a specific design vibe
+/jarvis-prototype "checkout flow" --style ecommerce-vivid
+
+# See all 22 curated style profiles
+/jarvis-prototype --list-styles
+```
+
+The skill resolves a design system in three-tier priority: project's
+`DESIGN.md` first, then `tailwind.config.js` custom theme colors, then
+a curated profile from the bundled library. Each profile is a complete
+system — Google Fonts typography pair, color tokens, motion timing,
+radius scale, anti-patterns. Twenty-two profiles cover mortgage,
+realtor, fintech, AI products, dashboards, ecommerce, healthcare,
+mobile-first, brutalist, glass-modern, devtools-terminal, and more.
+
+What lands on disk:
+
+```
+src/prototypes/<slug>/
+├── README.md              spec source, style id, what's mocked
+├── <Slug>Page.jsx         the routable page
+├── components/            supporting components
+├── mock-data.js           inline fixtures (8-25 realistic records)
+└── styles.js              resolved design tokens
+```
+
+The skill prints a one-line router patch you can paste manually — it
+never touches your app's router config on its own. Engineering decides
+whether to keep, fork, or rewrite; the README makes that decision easy.
+
+Composes with `/jarvis-pm` (read the spec via `--from-spec`) and the
+gstack `/design-review` skill (audit visual polish after generation).
+
 ### `/jarvis-eject` — leave cleanly
 
 Generates a complete `ARCHITECTURE.md` capturing what was set up + why
@@ -582,13 +633,14 @@ Your apps stay live — Jarvis only manages the scaffold-time tooling.
 
 ## Status & roadmap
 
-**v1.7.0** (current) — Audit + PM tooling.
-- 23 CLI binaries, 25 user-facing skills, 14 feature templates
+**v1.7.1** (current) — Audit + PM tooling + clickable prototypes.
+- 24 CLI binaries, 26 user-facing skills, 14 feature templates
 - 6 starter manifests
 - 19 unit tests pass, CI workflow in place
 - **Code Audit** (line-by-line, Google + Anthropic principles, O(n²) detection)
 - **Security Audit** (OWASP Top 10 + LLM Top 10 + AWS WAF Security Pillar)
 - **PM copilot** (5-phase interview → 11 markdown spec files)
+- **Prototype** (PM idea or spec → clickable React in the project's stack, 22 curated style profiles)
 - Cross-machine memory, custom specialists, brownfield AWS import
 - Live tail + cost + scale + canary + 2 debug commands
 
